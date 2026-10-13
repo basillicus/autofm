@@ -240,10 +240,10 @@ flowchart TD
 advisory stubs. The Analysis Bus is demonstrated with a worked example showing
 the cross-pillar correlation.
 
-**Example:** FM predicts a **transport Packet-Loss** fault on
-`RpUserPlaneLink` under gNB `AVUG03`, 3 ROPs ahead. PM projects an SLA breach on
-cell `AVUG1U` within 6 ROPs. CM generates three candidate actions. The Analysis
-Bus correlates all three and presents:
+**Example** (identifiers illustrative): FM predicts a **transport Packet-Loss**
+fault on `RpUserPlaneLink` under gNB `GNB001`, 3 ROPs ahead. PM projects an SLA
+breach on cell `GNB001-1` within 6 ROPs. CM generates three candidate actions.
+The Analysis Bus correlates all three and presents:
 
 > "Re-home the user-plane bearer off the degrading link - clears the predicted
 > fault, prevents the SLA breach, confidence ~0.9 (illustrative)."
