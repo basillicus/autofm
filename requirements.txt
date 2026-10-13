@@ -1,0 +1,16 @@
+# autofm — install entry point.
+#
+# The authoritative dependency definitions live in env/:
+#   - env/requirements.in    top-level (direct) dependencies  <-- installed below
+#   - env/requirements.lock  fully-resolved exact pins (reproducible install)
+#
+# Install:
+#     pip install -r requirements.txt
+#
+# This currently installs the loosely-pinned direct deps (env/requirements.in),
+# which work today. Once env/requirements.lock is populated from Leonardo
+# (see env/README.md §2), switch the line below to:
+#     -r env/requirements.lock
+# for a byte-reproducible install.
+
+-r env/requirements.in
