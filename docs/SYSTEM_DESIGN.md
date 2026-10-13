@@ -1,4 +1,4 @@
-# autofm - System Design
+# autofm - Fault Management System Design
 
 **Autonomous Fault Management for Open RAN**
 
@@ -33,10 +33,10 @@ Team AFM_Ericsson · European AI Hackathon 2026
 | **gNB** | 5G NR base station (`ManagedElement`); hosts the CU, DU and transport functions. |
 | **GNBDUFunction** | Distributed-unit function of a gNB; parents NRCellDU and NRSectorCarrier. |
 | **GNBCUCPFunction** | Centralized-unit control-plane function; parents NRCellCU. |
-| **GNBCUUPFunction** | Centralized-unit user-plane function; parents the S1U / Rp transport links. |
+| **GNBCUUPFunction** | Centralized-unit user-plane function; parents the user-plane transport links (S1-U in NSA/EN-DC; Rp is implementation-specific). |
 | **NRCellDU / NRCellCU** | Distributed- and centralized-unit views of an NR cell. |
 | **NRSectorCarrier** | Carrier served by a cell (power, downtime). |
-| **Transport link** | S1ULink / RpUserPlaneLink user-plane bearers under the CU-UP. |
+| **Transport link** | User-plane bearers under the CU-UP: S1ULink (NSA/EN-DC S1-U) and RpUserPlaneLink (implementation-specific). |
 | **Cell** | An NR cell; the CU/DU/SectorCarrier triple for one radio sector. |
 | **UE** | User Equipment - an end device connected to the RAN. |
 | **PM / CM** | Performance- and Configuration-Management counter/attribute data. |
@@ -62,12 +62,12 @@ Team AFM_Ericsson · European AI Hackathon 2026
 | **Epistemic uncertainty** | Uncertainty from the model/limited data (reducible). |
 | **Conformal Prediction** | Distribution-free, model-agnostic wrapper giving calibrated coverage sets. |
 | **Coverage** | Fraction of cases the prediction set is guaranteed to contain the true label (e.g., 95%). |
-| **OU process** | Ornstein-Uhlenbeck - a mean-reverting stochastic process used for counter dynamics. |
+| **OU-like** | Ornstein-Uhlenbeck - mean-reverting autocorrelation observed in the counter time-series. |
 | **Horizon (m)** | Forecast lead time in ROPs (e.g., m=5 to 120). |
 | **Checkpoint** | Saved trained model weights. |
 | **HPO** | Hyperparameter Optimization - automated hyperparameter search (Ray Tune / Optuna). |
 | **DDP** | Distributed Data Parallel - PyTorch multi-GPU/multi-node training. |
-| **falcon** | Phase 1 baseline pipeline (PCA + LSTM + RF). |
+| **falcon** | Baseline track (PCA + LSTM + RF), compared against the autofm FM track. |
 
 ---
 
@@ -112,10 +112,11 @@ core extends to PM and CM.
 
 ## 4. System overview
 
-The pipeline ingests multi-level 5G NR PM/CM counters over the real network
+The pipeline ingests multi-level 5G NR PM/CM counters over a 3GPP-aligned
 topology (gNB → CU/DU/SectorCarrier + transport), compresses them, forecasts
 their trajectory, and classifies the resulting state into a fault advisory. The
-dataset and its schema are defined in the dataset specification.
+dataset, its schema, and the default/full scale are defined in the dataset
+specification (DS §3).
 
 > **Diagram 1**
 
@@ -127,7 +128,7 @@ flowchart LR
         TRANS["Transport<br/>(S1U / Rp links)"]
     end
 
-    TELE --> DG["PM/CM dataset<br/><i>pm* counters · OU dynamics · coupling</i>"]
+    TELE --> DG["PM/CM dataset<br/><i>pm* counters over gNB topology</i>"]
     DG --> MAE["MAE<br/><i>nonlinear representation</i>"]
     MAE --> GAT["GAT<br/><i>topology-aware fusion</i>"]
     GAT --> PTST["PatchTST<br/><i>temporal attention</i>"]
@@ -165,20 +166,22 @@ flowchart TD
 ### MAE - nonlinear representation learning
 
 Self-supervised pretraining: mask 30-50% of counters and reconstruct. 1D-Conv
-encoder (D → 64 → 32 → latent). Learns nonlinear cross-level relationships.
-Reconstruction error doubles as an anomaly score.
+encoder (D → 64 → 32 → **latent dim 32**). Learns nonlinear cross-level
+relationships. Reconstruction error doubles as an anomaly score. A linear
+projection lifts the 32-dim latent to the model width (128) at the GAT input.
 
 ### GAT - topology-aware fusion
 
-Multi-head graph attention (4 heads, 2 layers) over the network topology. Each
-node's embedding is enriched by its neighbours. Attention weights expose the
-causal chain directly.
+Multi-head graph attention (4 heads, 2 layers) over the network topology,
+operating at width 128. Each node's embedding is enriched by its neighbours.
+Attention weights expose the causal chain directly.
 
 ### PatchTST - temporal attention backbone
 
-Patch embedding (`patch_size=5`), Transformer encoder (4 layers, 4 heads,
-`embed_dim=128`). Parallelizable on GPU and interpretable via attention; a
-well-established architecture for time-series forecasting.
+Patch embedding over a 60-ROP window (`patch_size=5` → 12 patches, integer by
+construction), Transformer encoder (4 layers, 4 heads, `embed_dim=128`).
+Parallelizable on GPU and interpretable via attention; a well-established
+architecture for time-series forecasting.
 
 ### Multi-task evidential heads
 
@@ -193,8 +196,10 @@ Four parallel heads on the shared backbone:
 
 ### Conformal Prediction
 
-Post-hoc wrapper. Distribution-free and model-agnostic. Produces coverage sets
-with a guaranteed error rate (e.g., 95% coverage).
+Post-hoc wrapper. Distribution-free and model-agnostic. Produces **calibrated**
+coverage sets at a nominal level (e.g., 95%); coverage is exact under
+exchangeability and approximate under the temporal split used here (dataset spec
+§11.1).
 
 ---
 
@@ -241,7 +246,7 @@ cell `AVUG1U` within 6 ROPs. CM generates three candidate actions. The Analysis
 Bus correlates all three and presents:
 
 > "Re-home the user-plane bearer off the degrading link - clears the predicted
-> fault, prevents the SLA breach, confidence 0.91."
+> fault, prevents the SLA breach, confidence ~0.9 (illustrative)."
 
 ---
 
@@ -253,15 +258,15 @@ flowchart LR
 
     ROOT --> CFG["config.yaml<br/><i>all hyperparameters</i>"]
     ROOT --> REQ["requirements.txt"]
-    ROOT --> FALCON["falcon/<br/><i>Phase 1: baseline</i>"]
-    ROOT --> PKG["autofm/<br/><i>Phase 2: full architecture</i>"]
+    ROOT --> FALCON["falcon/<br/><i>baseline track</i>"]
+    ROOT --> PKG["autofm/<br/><i>FM track (full architecture)</i>"]
     ROOT --> DATA["data/<br/><i>gitignored</i>"]
     ROOT --> ART["artifacts/<br/><i>gitignored</i>"]
     ROOT --> SCRIPTS["scripts/<br/><i>build_data · run_sweep · run_horizon_test</i>"]
 
     FALCON --> FMOD["ingestion · preprocess · reduce<br/>forecast · classify · pipeline"]
 
-    PKG --> DGEN["datagen/<br/><i>topology · dynamics · fault model · labels</i>"]
+    PKG --> DGEN["datagen/<br/><i>topology · counters · labels</i>"]
     PKG --> MODEL["model/<br/><i>mae · gat · patchtst · heads · evidential · conformal</i>"]
     PKG --> ADV["advisory/<br/><i>pm_stub · cm_stub</i>"]
     PKG --> PIPE["pipeline/<br/><i>pretrain · train · evaluate · infer</i>"]
@@ -283,7 +288,7 @@ PyTorch DDP.
 
 **Data split:** Chronological (60% train / 20% val / 20% test), val/test strictly
 after train, with a held-out calibration slice for conformal prediction. No
-future leakage. See the dataset spec (§10) for the full pipeline contract.
+future leakage. See the dataset spec (§11) for the full pipeline contract.
 
 **Tests:** Unit (pytest), integration (end-to-end shape checks), regression
 (baseline holds), ablation (with/without each component), horizon degradation
@@ -298,11 +303,13 @@ raw accuracy):
 | Fault-type macro-F1 (m=30) | N/A | moderate-high |
 | Localization top-k accuracy | N/A | high |
 | TTF RMSE (ROPs) | N/A | low |
-| Inference latency | N/A | <= 50 ms/step CPU |
-| Conformal coverage | N/A | >= 95% |
+| Inference latency | N/A | target set after baseline |
+| Conformal coverage | N/A | nominal level (design parameter), empirically validated |
 
-Baseline numbers are populated once `falcon` runs on the dataset; targets are
-set relative to that baseline rather than stated as absolute figures in advance.
+Targets are set relative to the `falcon` baseline once it runs on the dataset,
+rather than stated as absolute figures in advance. The conformal nominal
+coverage level is a design parameter; realised coverage is validated
+empirically and is approximate under the temporal split (dataset spec §11.1).
 
 ---
 
