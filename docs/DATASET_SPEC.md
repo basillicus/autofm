@@ -86,10 +86,10 @@ all-null or non-numeric columns in this window.)
 ### 2.2 Topology (parsed from `fdn`)
 
 ```
-SubNetwork=CH
+SubNetwork=NET
   └─ SubNetwork=RAN
-       └─ SubNetwork={MRAN11, MRAN19, NRAN11, NRAN19}
-            └─ gNB  (MeContext / ManagedElement, 107 distinct: AVUG03, BECO01, ...)
+       └─ SubNetwork={REGION_A, REGION_B, REGION_C, REGION_D}
+            └─ gNB  (MeContext / ManagedElement, 107 distinct: GNB001, GNB002, ...)
                  ├─ GNBDUFunction
                  │    ├─ NRCellDU         ─┐
                  │    └─ NRSectorCarrier  ─┤  1:1:1 per cell (309 of each)
@@ -100,8 +100,12 @@ SubNetwork=CH
                       └─ RpUserPlaneLink  (transport link)
 ```
 
-- The `fdn` nests SubNetworks (`SubNetwork=CH, SubNetwork=RAN, SubNetwork=MRAN19,
-  ...`): CH → RAN are top levels, MRAN*/NRAN* are children.
+> All node names in this spec (gNB, cell, SubNetwork identifiers) are
+> **illustrative placeholders**, not real network identifiers.
+
+- The `fdn` nests SubNetworks (`SubNetwork=NET, SubNetwork=RAN,
+  SubNetwork=REGION_B, ...`): the top two are fixed levels, the regions are
+  children.
 - Each gNB splits into three functions: **GNBDUFunction** (DU + SectorCarrier),
   **GNBCUCPFunction** (CU), **GNBCUUPFunction** (transport). The NRCellCU,
   NRCellDU and NRSectorCarrier for a given cell share the same (gNB, cell-id).
@@ -323,7 +327,7 @@ a transport-origin fault can name a transport link as its origin.
 | `fault_type` | one of the 6 classes above (int, 0 = Normal) |
 | `fault_origin_node` | FDN of the originating cell / carrier / transport link (`none` when Normal) |
 | `time_to_failure_rop` | ROPs until label flips (counts down during ramp; sentinel `-1` when Normal / not degrading) |
-| `causal_path` | ordered FDN chain, pipe-delimited in the CSV, e.g. `NRSectorCarrier=GCAM2U\|NRCellDU=GCAM2U\|NRCellCU=GCAM2U\|RpUserPlaneLink=<ip_ip>` |
+| `causal_path` | ordered FDN chain, pipe-delimited in the CSV, e.g. `NRSectorCarrier=GNB001-2\|NRCellDU=GNB001-2\|NRCellCU=GNB001-2\|RpUserPlaneLink=<ip_ip>` |
 | `is_degrading` | 1 during the ramp window, else 0 |
 | `ramp_progress` | 0.0 → 1.0 across the ramp (0.0 when not degrading) |
 
