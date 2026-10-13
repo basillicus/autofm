@@ -9,14 +9,12 @@
 
 </div>
 
-`autofm` forecasts faults in Open RAN (O-RAN) deployments - CPU stress, memory
-stress, packet loss - *before they happen*, so operators can act ahead of impact.
+`autofm` forecasts faults in 5G NR (Open RAN) networks *before they happen*, so
+operators can act ahead of impact. It reads standard PM/CM counters across the
+RAN, learns how a fault builds up, and raises an advisory that says **what** will
+fail, **where**, **when**, **why**, and **what to do**.
 
-To do this, it fuses telemetry from all three layers of the stack - infrastructure, platform, RAN -
-then runs a three-stage pipeline: **compress the data, forecast where it's heading, classify the
-state.**
-
-> 🏆 Built at the **European AI Hackathon 2026** by team **AFM_Ericsson**.
+> Built at the **European AI Hackathon 2026** by team **AFM_Ericsson**.
 
 ---
 
@@ -24,6 +22,7 @@ state.**
 
 - [The problem](#the-problem)
 - [How it works](#how-it-works)
+- [Documents](#documents)
 - [Hackathon goals](#hackathon-goals)
 - [Team](#team)
 - [Status](#status)
@@ -33,40 +32,52 @@ state.**
 
 ## The problem
 
-Open RAN's disaggregated, multi-vendor design brings flexibility, but makes
-resilience something you have to engineer, not assume. Faults can originate at three levels:
+A single fault in a disaggregated RAN shows up at several levels at once:
 
-- **Infrastructure** - the host (CPU, memory, temperature)
-- **Platform** - the network functions (e.g. CU, DU, RIC, core)
-- **RAN** - the application (connected users, bitrate, signal quality)
+- **Radio** - the cell and carrier (NRCellDU, NRSectorCarrier)
+- **Service** - the centralized unit (NRCellCU: mobility, accessibility)
+- **Transport** - the user-plane links under the CU-UP
 
-**Watch only one level and you misdiagnose.** RAN packet loss can look like a link failure - when
-the real cause is a host CPU throttling under a heat spike.
+**Watch only one level and you misdiagnose.** A transport packet-loss fault can
+look like a radio problem, when the real cause is a degrading user-plane link.
+Reactive, single-level monitoring names the wrong culprit - and only after the
+outage.
 
 ## How it works
 
-Three stages, in plain terms: **compress the data, forecast where it's heading, then classify the
-resulting state.**
+`autofm` reads multi-level PM/CM counters and runs them through a pipeline that
+**compresses, forecasts, then classifies** the network state into a fault
+advisory:
 
 ```mermaid
 flowchart LR
-    A["Multi-level telemetry<br/>(Infrastructure · Platform · RAN)"] --> B["PCA<br/><i>dimensionality reduction</i>"]
-    B --> C["LSTM<br/><i>time-series forecasting</i>"]
-    C --> D["Random Forest<br/><i>multi-class classification</i>"]
-    D --> E["Predicted state<br/>Normal · CPU Stress · Memory Stress · Packet Loss"]
+    A["Multi-level PM/CM counters<br/>(radio · service · transport)"] --> B["Compress<br/><i>learned representation</i>"]
+    B --> C["Fuse topology<br/><i>graph attention</i>"]
+    C --> D["Forecast<br/><i>temporal attention</i>"]
+    D --> E["Classify + explain<br/><i>type · location · time-to-failure · cause</i>"]
+    E --> F["Calibrated advisory<br/><i>with uncertainty</i>"]
 ```
 
-| Stage | What it is | What it does here |
-|-------|------------|-------------------|
-| **PCA** <br>(Principal Component Analysis) | A way to shrink many columns of data down to the few that carry the most information. | Compresses dozens of redundant telemetry signals into a compact set - less compute, better scaling. |
-| **LSTM** <br>(Long Short-Term Memory) | A neural network built for sequences over time. | Looks at recent telemetry history and forecasts the values a few moments ahead. |
-| **Random Forest** | A classifier made of many decision trees that vote. | Reads the forecast and names the predicted state - robust to noisy data. |
+Each prediction carries an uncertainty estimate and a calibrated confidence, so
+operators know when to trust it. A simpler baseline pipeline (`falcon`) is kept
+alongside for comparison.
+
+The architecture and the dataset are specified in detail under
+[`docs/`](docs/).
+
+## Documents
+
+| Document | What it covers |
+|----------|----------------|
+| [`docs/SYSTEM_DESIGN.md`](docs/SYSTEM_DESIGN.md) | System architecture, model, FM/PM/CM scope, evaluation |
+| [`docs/DATASET_SPEC.md`](docs/DATASET_SPEC.md) | PM/CM dataset schema, topology, fault model, labels, ML pipeline contract |
+| [`docs/TEAM.md`](docs/TEAM.md) | Team and event |
 
 ## Hackathon goals
 
-1. **GPU-accelerate** the LSTM forecaster (CPU → CUDA).
-2. **Benchmark** the end-to-end pipeline.
-3. **Scale** the pipeline toward production-scale telemetry volumes.
+1. **Build** the fault-prediction pipeline end to end.
+2. **GPU-accelerate** training and inference.
+3. **Benchmark and scale** toward production-scale counter volumes.
 
 ## Team
 
