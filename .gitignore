@@ -1,0 +1,27 @@
+# --- autofm environment / secrets ---
+.env
+.env.*
+!env/.env.example
+
+# --- virtual environments ---
+.venv/
+venv/
+env.bak/
+
+# --- data & artifacts (per SYSTEM_DESIGN §8) ---
+data/
+artifacts/
+logs/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- OS / editor ---
+.DS_Store
+*.swp
+.idea/
+.vscode/

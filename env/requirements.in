@@ -1,0 +1,36 @@
+# autofm — top-level (direct) dependencies.
+#
+# Edit THIS file when adding a package, then regenerate requirements.lock
+# on Leonardo via the shared env's setup_env.sh. Keep pins loose here;
+# requirements.lock carries the exact resolved versions.
+#
+# Versions of record come from the shared Leonardo env / requirements.lock
+# (see docs/ENVIRONMENT_SETUP.md §1). PyTorch is a CUDA build on Leonardo and a
+# CPU build off-cluster.
+#
+# ---------------------------------------------------------------------------
+
+# ---- Core / compute -------------------------------------------------------
+torch                    # exact version pinned in requirements.lock (shared env)
+torch_geometric
+numpy
+pandas
+scipy
+
+# ---- ML / modelling -------------------------------------------------------
+scikit-learn
+xgboost                  # CPU only on Leonardo (CUDA driver too old; see §5)
+
+# ---- Uncertainty / calibration ---------------------------------------------
+mapie                    # conformal prediction wrappers
+
+# ---- Config / serialization ------------------------------------------------
+pyyaml
+
+# ---- Visualization / graphs -----------------------------------------------
+matplotlib
+networkx
+
+# ---- Training infrastructure / HPO / monitoring ---------------------------
+optuna
+tensorboard
