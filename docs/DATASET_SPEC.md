@@ -1,4 +1,4 @@
-# autofm - Dataset Specification
+# autofm - 5G NR PM/CM Dataset Specification
 
 **PM/CM dataset for the FM phase**
 
@@ -28,12 +28,14 @@ This spec defines the PM/CM dataset the FM phase trains and evaluates on: its
 schema, topology, time cadence, dynamics, fault model, labels, and output
 format.
 
-The dataset is **3GPP-aligned 5G NR** performance (PM) and configuration (CM)
-data over a cell / carrier / transport topology. The managed-object model (gNB
-with the CU-CP / CU-UP / DU split, NR cells, carriers) follows the 3GPP 5G NRM
-(TS 28.541), and the performance measurements and the Recording Output Period
-(ROP) follow the 3GPP performance-measurement framework (TS 28.552). Unlike raw
-counter data, it carries **fault labels** (type, origin, time-to-failure, causal
+The dataset follows the **3GPP 5G NR** architecture and performance-management
+framework. The managed-object model (gNB with the CU-CP / CU-UP / DU split, NR
+cells, carriers) aligns with the 3GPP 5G NRM concepts (TS 28.541), and the
+performance-measurement model and Recording Output Period (ROP) align with the
+3GPP PM framework (TS 28.552). The specific counter and managed-object **names
+are implementation-specific identifiers** (not literal TS 28.552/28.541 strings)
+that map loosely to those 3GPP measurement families. Unlike raw counter data,
+the dataset carries **fault labels** (type, origin, time-to-failure, causal
 path), which make the FM prediction task supervised.
 
 > This spec defines the dataset in detail; the system design doc refers to it
@@ -49,15 +51,16 @@ Distribution counters are stored as **comma-separated vectors inside a single
 field**. Every group carries 6 metadata columns:
 `fdn, mecontext, cell, rdiTimestamp, rdiTimestampTZ, ropCount`.
 
-Each normal file holds **one aggregated row per entity per day** (the row is the
-rollup of ~96 fifteen-minute ROPs; `ropCount` ≈ 96). Entities are **cells** for
+Each daily file holds **two rows per entity per day** - one per `rdiTimestamp`
+(the ROP date and the following midnight boundary); each row is a rollup of
+~96 fifteen-minute ROPs (`ropCount` ≈ 96). Entities are **cells** for
 CU/DU/SectorCarrier and **transport links** for S1U/Rp.
 
 | Group | Total cols | Scalar | Vector | Empty/other | Rows/day | Entity | Role |
 |-------|-----------:|-------:|-------:|------------:|---------:|--------|------|
 | **NRCellDU** | 280 | 152 | 95 | 27 | ~618 (309 cells × 2 ts) | cell | Radio/MAC/PHY - richest group |
-| **NRCellCU** | 282 | 242 | 1 | 33 | ~618 | cell | Mobility / ENDC / handover |
-| **NRSectorCarrier** | 28 | 6 | 16 | 0 | ~618 | cell (`cell` col blank; id in `fdn`) | Carrier power + **downtime** |
+| **NRCellCU** | 282 | 242 | 1 | 33 | ~618 (309 × 2) | cell | Mobility / ENDC / handover |
+| **NRSectorCarrier** | 28 | 6 | 16 | 0 | ~618 (309 × 2) | cell (`cell` col blank; id in `fdn`) | Carrier power + **downtime** |
 | **S1ULink** | 11 | 0 | 5 | 0 | ~29,000 | transport link (`cell` blank) | Transport (PDCP volumes) |
 | **RpUserPlaneLink** | 32 | 0 | 15 | 11 | ~4,100 | transport link (`cell` blank) | Transport + **UL packet loss** |
 
@@ -69,10 +72,11 @@ all-null or non-numeric columns in this window.)
 > entity identity must be parsed from `fdn`.
 
 > **Transport is per-link, not per-cell.** On a normal day S1ULink has ~29,000
-> rows (≈17,800 distinct link FDNs) and RpUserPlaneLink ~4,100 rows (≈2,300
-> distinct link FDNs) - IP-pair links under `GNBCUUPFunction`, not 309 cells.
-> They do not map 1:1 to cells and require an aggregation rule (roll up to the
-> owning gNB / CUUP) before joining to a cell-indexed tensor (see §9).
+> rows across ≈17,800 distinct link FDNs (≈2 rows per FDN per day, matching the
+> two-timestamp pattern; some links report once) and RpUserPlaneLink ~4,100 rows
+> across ≈2,300 distinct link FDNs - IP-pair links under `GNBCUUPFunction`, not
+> 309 cells. They do not map 1:1 to cells and require an aggregation rule (roll
+> up to the owning gNB / CUUP) before joining to a cell-indexed tensor (see §9).
 
 > **10-01 is an outlier - exclude it.** The `2025-10-01` files report ~14,787
 > rows, 48 distinct timestamps and `ropCount` 2-4, i.e. a non-standard dump
@@ -105,6 +109,11 @@ SubNetwork=CH
   identical).
 - Cells per gNB: `{1 cell: 3 gNBs, 2 cells: 9, 3 cells: 94, 6 cells: 1}` -
   **the norm is 3 cells per gNB** (tri-sector site).
+- **Transport interfaces.** `S1ULink` reflects an **NSA / EN-DC** deployment,
+  where the node terminates the LTE/EPC S1-U user plane (in pure 5G SA this
+  would be NG-U / F1-U). `RpUserPlaneLink` is an **implementation-specific
+  transport managed object**, not a 3GPP NRM class. Both are user-plane bearers
+  under the CU-UP (`GNBCUUPFunction`).
 
 ### 2.3 CM attributes
 
@@ -112,16 +121,17 @@ SubNetwork=CH
 rows), `NRCellCU` (2358 × 316), `SectorEquipmentFunction` (818 × 488),
 `NRSectorCarrier` (115), `NRFrequency` (83). Plus ~25 small per-cell profile
 tables (`DrxProfile`, `Rach`, `AdmissionLimit`, ...). CM lists ~316 configured
-cells vs 309 reporting in PM: the surplus are configured-but-not-reporting cells
-(provisioned, no PM in this window).
+cells vs 309 reporting in PM: the 7-cell surplus are configured-but-not-reporting
+cells (provisioned, no PM in this window).
 
 ### 2.4 Time
 
 - 31 daily folders each for `pm/` and `cm/`, **2025-10-01 .. 2025-10-31**.
-- Native ROP = **15 min** (96 ROPs/day). The daily-rollup form carries **one
-  aggregated row per entity**, the rollup of those ~96 ROPs: `ropCount` ≈ 93-96
-  on a normal day. (The 10-01 outlier reports `ropCount` 2-4; see §2.1.)
-- So the delivered granularity is **1 row/entity/day** - too coarse for a
+- Native ROP = **15 min** (96 ROPs/day). The daily-rollup form carries **two
+  aggregated rows per entity per day** (one per `rdiTimestamp`: the ROP date and
+  the following midnight), each a rollup of ~96 ROPs: `ropCount` ≈ 93-96 on a
+  normal day. (The 10-01 outlier reports `ropCount` 2-4; see §2.1.)
+- So the delivered granularity is a **daily aggregate** - too coarse for a
   "predict N steps ahead" story at ROP resolution (see §5).
 
 ### 2.5 Data-quality hazards (loader must be defensive)
@@ -178,8 +188,9 @@ consumes the typed edge index.
 
 ## 4. Counter families
 
-The counters are 3GPP NR performance measurements (TS 28.552), written here with
-a `pm*` counter name over an `fdn`-addressed managed object (TS 28.541). The same
+The counters use **implementation-specific `pm*` names** over `fdn`-addressed
+managed objects, mapping to 3GPP NR measurement families (TS 28.552) rather than
+being literal TS strings. The same
 loaders and the `falcon` baseline parse the PM/CM CSVs directly. The dataset
 models a curated, high-signal subset per group (full fidelity - all **247
 populated NRCellDU counters = 152 scalar + 95 vector** - is optional via config).
@@ -191,14 +202,14 @@ before use.
 | Group | Modelled counter families (examples) | Type |
 |-------|--------------------------------------|------|
 | **NRCellDU** | `pmActiveUeDlMax/Sum/Samp` *(confirmed)*, `pmMacHarqDlFail/UlFail` *(confirmed)*, `pmRadioRaCbFailMsg*` *(confirmed)*, `pmRadioPucchFailSr` *(confirmed)*, `pmPagDiscarded` *(confirmed)*, `pmCellDowntimeAuto/Man` *(confirmed)*, MAC/PDCP volume + PRB-utilisation counters *(illustrative)* | scalar + vector |
-| **NRCellCU** | `pmHoPrepFail*` *(confirmed)*, `pmHoPrepRejIn*` *(confirmed)*, `pmEndcRelUeAbnormal*` *(confirmed)*, `pmEndcSetupFailReconfigFail` *(confirmed)*, `pmDrbEstabFailIntgProt` *(confirmed)*, RRC-connection-establishment counters *(illustrative)* | scalar |
+| **NRCellCU** | `pmHoPrepFail*` *(confirmed)*, `pmHoPrepRejIn*` *(confirmed)*, `pmEndcRelUeAbnormal*` *(confirmed)*, `pmEndcSetupFailReconfigFail` *(confirmed)*, `pmDrbEstabFailIntgProt` *(confirmed)*, RRC-connection-establishment counters *(illustrative)* | scalar (+ 1 vector: `pmCaConfigDlSumEndcDistr`) |
 | **NRSectorCarrier** | `pmSectorCarrierDowntime/Auto/Man` *(confirmed)*, `pmMicroTxSleepTime` *(confirmed)*, `pmEmfPwrBackoff*Distr` *(confirmed)* | scalar + vector |
 | **S1ULink** | `pmPdcpPktRecDl5qi` *(confirmed)*, `pmPdcpPktRecDlDisc5qi` *(confirmed)*, `pmPdcpVolTransUl5qi` *(confirmed)* | vector (per-5QI) |
 | **RpUserPlaneLink** | `pmPdcpPktLossUlQos` *(confirmed)*, `pmPdcpPktLossUlToDiscQos/ToQos` *(confirmed)*, `pmPdcpPktTransDl*Qos` *(confirmed)* | vector (per-QoS) |
 
 **Distribution-vector counters** are emitted as comma-separated bins with a
 **fixed per-counter bin count** (e.g. 16- or 40-bin histograms), matching how
-3GPP distribution measurements (TS 28.552) are reported. Bins are
+3GPP distribution-type measurements are reported. Bins are
 **driven by the same latent cell state** as the scalar counters (shifting mass
 across bins as load/fault state changes) rather than independent noise, so the
 histograms move coherently with the scalars.
@@ -220,10 +231,10 @@ cadence by counter type:
 
 ## 5. Cadence
 
-The daily-rollup form is 1 row/entity/day (`ropCount`≈96). The **dataset is at
+The source form is a daily aggregate (`ropCount`≈96 per row). The **dataset is at
 the native 15-min ROP** (`ropCount=1`, **96 rows/entity/day**) - the per-ROP
-level the daily rollup aggregates, **96× finer** - which is required for
-forecasting at ROP resolution.
+level the daily rollup aggregates, **96× finer than the daily aggregate** -
+which is required for forecasting at ROP resolution.
 
 - **Default:** 15-min ROP, 14 days → 1,344 steps/entity.
 - Horizon `m` (design doc, m=5..120) is measured in **ROPs** (15 min each),
@@ -231,21 +242,22 @@ forecasting at ROP resolution.
 
 ---
 
-## 6. Dynamics
+## 6. Dynamics (observed properties)
 
-Per-counter **Ornstein-Uhlenbeck** process (mean-reverting) around a
-cell-specific baseline. Indicative defaults (all in `config.yaml`):
+Per counter, the series exhibits the following statistical behaviour (knobs in
+`config.yaml`):
 
-- **OU parameters:** mean-reversion `θ` ≈ 0.1-0.3 /ROP, volatility `σ` scaled to
-  each counter's schema range. Baseline drawn per cell from the schema range.
-- **Diurnal load profile:** busy-hour vs night sinusoid (period = 96 ROPs)
-  modulating UE / PRB / volume counters.
-- **Cross-level coupling with delay** along the hierarchy
+- **Mean-reverting noise:** counters fluctuate around a cell-specific baseline
+  and revert toward it (an Ornstein-Uhlenbeck-like autocorrelation), with
+  volatility scaled to each counter's schema range.
+- **Diurnal modulation:** UE / PRB / volume counters follow a busy-hour vs night
+  cycle (period = 96 ROPs = 24 h).
+- **Cross-level coupling with delay:** disturbances propagate along the hierarchy
   `SectorCarrier power/downtime → DU radio → CU mobility/abnormal-rel →
-  transport loss/discard`, with per-hop lag (default 1-3 ROPs) and a configurable
-  coupling gain.
-- **Config (CM) influence:** selected CM attributes (DRX, admission limits, RACH
-  config) shift PM baselines, linking the CM pillar to PM behaviour.
+  transport loss/discard`, with a per-hop lag (1-3 ROPs).
+- **Configuration dependence:** selected CM attributes (DRX, admission limits,
+  RACH config) shift PM baselines, so the CM pillar is reflected in PM
+  behaviour.
 
 ---
 
@@ -257,7 +269,7 @@ grounded in counter behaviour.
 
 | Fault type | Origin level | Primary signature counters | Propagates to |
 |------------|--------------|----------------------------|---------------|
-| **Normal** | - | baseline OU | - |
+| **Normal** | - | baseline behaviour | - |
 | **Cell/Carrier Downtime** | NRSectorCarrier | `pmSectorCarrierDowntime*`, `pmCellDowntimeAuto` ↑ | DU volume ↓, CU abnormal-release ↑ |
 | **Accessibility (RACH) fail** | NRCellDU | `pmRadioRaCbFailMsg*`, `pmRadioPucchFailSr` ↑ | CU RRC-establishment failures ↑ |
 | **Mobility / ENDC fail** | NRCellCU | `pmHoPrepFail*`, `pmEndcRelUeAbnormal*` ↑ | neighbour-cell HO counters ↑ |
@@ -267,31 +279,30 @@ grounded in counter behaviour.
 Every "propagates to" effect references a counter in the §4 modelled set
 (volume, `pmMacHarq*Fail`, abnormal-release, RRC-establishment, HO).
 
-**Label vs feature decoupling (leakage control).** The label is driven by a
-**latent fault state** `z(t) ∈ [0,1]` per entity, *not* by any observable
-counter. The signature counters respond to `z` only **partially and noisily**
-(a monotone-but-noisy link with per-counter gain, plus the OU noise of §6), so
-no input feature equals or thresholds the label. Concretely: `z` crosses its
-flip threshold to set `fault_type`, while counters see `g·f(z) + OU noise` with
-`g < 1`. This prevents a model from recovering the labeling rule from its own
-inputs, which would make accuracy a tautology. The latent `z` is **recorded in
-`meta` for audit but is not a feature**.
+**Label vs feature decoupling (leakage control).** The fault label corresponds to
+a **latent severity state** `z(t) ∈ [0,1]` per entity that is **not an observable
+counter**. The signature counters correlate with `z` only **partially and
+noisily** (a monotone-but-noisy relationship with per-counter gain `g < 1`, plus
+the mean-reverting noise of §6), so **no input feature equals or thresholds the
+label**. The hard class boundary sits on the hidden `z`, not on any counter the
+model sees - preventing a model from recovering the labeling rule from its own
+inputs (which would make accuracy a tautology). `z` is **recorded in `meta` for
+audit and is never a feature**.
 
-**Degradation ramp and horizon alignment.** Each fault has a ramp over which `z`
-rises from 0 to the flip threshold. **Ramp length is sampled to be ≥ the maximum
-evaluation horizon** (`ramp_rops ≥ max(m)`; default ramp 20-130 ROPs for
-`m` up to 120), so a genuine (if faint) precursor exists at every evaluated
-horizon and early prediction is a real forecasting task rather than
-unpredictable-by-construction. Fault *onset* (ramp start) is itself scheduled by
-a slow per-entity hazard process, so the model can pick up pre-ramp drift. The
-horizon-degradation curve is defined over `m ≤ max ramp`.
+**Degradation ramp and horizon alignment.** Before a label flips, `z` rises
+across a **ramp**. To keep early prediction a genuine forecasting task at every
+evaluated horizon, the **ramp length is kept ≥ the maximum horizon**
+(`ramp_rops ≥ max(m)`; default ramp **120-150 ROPs** for `m` up to 120). A faint
+precursor therefore exists throughout the evaluated range. Fault onset (ramp
+start) follows a slow per-entity hazard, so pre-ramp drift is also present. The
+horizon-degradation curve is defined over `m ≤ ramp length`.
 
-**Window vs ramp vs horizon.** The lookback window (§11.3, default 64 ROPs)
+**Window vs ramp vs horizon.** The lookback window (§11.3, default 60 ROPs)
 need not contain the whole ramp. At evaluation horizon `m`, the model sees the
 window ending `m` ROPs before the flip, so for `m` approaching the ramp length
 only the *earliest, faintest* part of the ramp is visible - which is exactly
-what makes the horizon-degradation curve informative. Horizons longer than the
-window's reach into the ramp are reported as the natural accuracy floor, not
+what makes the horizon-degradation curve informative. Horizons whose precursor
+falls outside the window are reported as the natural accuracy floor, not
 excluded.
 
 **Fault mix (default):** 55% Normal and ~9% each of the five fault classes
@@ -339,10 +350,10 @@ final step, so pre-flip windows carry the pre-flip label with
 
 ## 9. Output format
 
-The dataset mirrors the **real export layout exactly**, so the same loaders and
-the `falcon` baseline read it without modification. Two top-level trees match
-the source (`pm/`, `cm/`); a third (`fm/`) adds the fault labels the FM task
-needs.
+The dataset follows the **standard 5G NR PM/CM export layout**, so the same
+loaders and the `falcon` baseline read it without modification. Two top-level
+trees match the standard layout (`pm/`, `cm/`); a third (`fm/`) adds the fault
+labels the FM task needs.
 
 ```
 dataset/
@@ -353,16 +364,16 @@ dataset/
 │   ├── S1ULink_counters_<date>.csv
 │   └── RpUserPlaneLink_counters_<date>.csv
 ├── cm/<YYYY-MM-DD>/
-│   ├── <Object>_attributes_<date>.csv        # same object types as the source
+│   ├── <Object>_attributes_<date>.csv        # per CM object type
 │   └── ...
 ├── fm/<YYYY-MM-DD>/
 │   └── <Group>_labels_<date>.csv             # labels keyed by (fdn, rdiTimestamp)
 └── meta.json                                  # seeds, config hash, schema, norm stats
 ```
 
-- **PM / CM files** use the **same format as the source**: `;`-delimited,
-  identical column order, distribution counters as comma-separated vectors, and
-  the 6 metadata columns (`fdn, mecontext, cell, rdiTimestamp, rdiTimestampTZ,
+- **PM / CM files** use the **standard export format**: `;`-delimited, fixed
+  column order, distribution counters as comma-separated vectors, and the 6
+  metadata columns (`fdn, mecontext, cell, rdiTimestamp, rdiTimestampTZ,
   ropCount`). PM files are `<Group>_counters_<date>.csv`; CM files are
   `<Object>_attributes_<date>.csv`. Clean rows only (none of the ragged or
   misnamed-file quirks of §2.5).
@@ -370,10 +381,14 @@ dataset/
   joined to the counters by `(fdn, rdiTimestamp)`. Each row carries the six
   labels of §8 (`fault_type`, `fault_origin_node`, `time_to_failure_rop`,
   `causal_path`, `is_degrading`, `ramp_progress`). Keeping labels in a separate
-  tree leaves the `pm/`/`cm/` files byte-for-byte in the source format.
-- **Cadence:** files follow the real per-day foldering; the dataset writes one
+  tree leaves the `pm/`/`cm/` files in the standard export format.
+
+  Note the three coexisting delimiters per file: `;` between fields, `,` within
+  a distribution-vector field, and `|` within the `causal_path` field (§8) -
+  loaders must handle all three.
+- **Cadence:** files follow the per-day foldering; the dataset writes one
   row per entity per ROP (§5), so a day holds up to 96 rows per entity rather
-  than the single daily-rollup row of the source.
+  than the standard two daily-aggregate rows.
 
 ### 9.1 Optional derived ML view
 
@@ -412,13 +427,22 @@ keep reported metrics trustworthy (no leakage) and reproducible.
 
 - **Chronological**: 60% train / 20% val / 20% test by ROP time, with val and
   test strictly **after** train. No shuffling across the time boundary.
+- **Self-supervised pretraining uses the train split only.** MAE pretraining is
+  unsupervised and therefore easy to leak - it must not see val/test windows, or
+  the learned representation (and the reconstruction-error anomaly score it
+  feeds downstream) has observed test-time distribution.
 - **Entity policy** (configurable, both reported):
   - *temporal* (default): all entities in all splits, split only on time -
     tests forecasting on known cells.
   - *entity-holdout*: a disjoint set of gNBs reserved for val/test - tests
-    generalization to unseen cells.
-- A **calibration slice** (last 10% of train, by time) is held out for
-  Conformal Prediction and never used for gradient updates.
+    generalization to unseen cells. Inter-site kNN handover edges (§3) are
+    **not drawn across the holdout boundary**, so held-out gNBs receive no
+    neighbour information from train gNBs.
+- A **calibration slice** is held out for Conformal Prediction and never used
+  for gradient updates. Taken from the end of train (adjacent to val/test) to
+  keep it as close as possible to the test distribution; under temporal drift
+  calibration and test are only approximately exchangeable, so the coverage
+  guarantee is **approximate, not exact** (see §11.5 and the design doc).
 
 ### 11.2 Normalization (fit on train only)
 
@@ -429,26 +453,34 @@ keep reported metrics trustworthy (no leakage) and reproducible.
 
 ### 11.3 Windowing
 
-- Fixed-length lookback windows for PatchTST (default length 64 ROPs,
-  `patch_size=5`), stride 1 within an entity, **never crossing entity
-  boundaries**.
+- Fixed-length lookback windows for PatchTST (default length **60 ROPs**,
+  `patch_size=5` → 12 patches), stride 1 within an entity, **never crossing
+  entity boundaries**.
 - Causal labeling per §8 (target = window's last step). Windows are built
   **after** the split so no window spans the train/val/test boundary.
+- Training uses stride 1; **val/test use non-overlapping windows**
+  (stride = window length) so near-duplicate overlapping windows do not inflate
+  the effective sample size and the reported metrics stay honest.
 
 ### 11.4 Distribution-vector representation
 
-Each distribution-vector counter enters the feature tensor as its **fixed bin
-vector** (16 or 40 bins) *plus* three reduced summaries (mean-bin, entropy,
-top-bin fraction). Config can switch to summaries-only to cut input dimension.
-The chosen representation and the resulting per-group feature dimension are
-recorded in `meta.json`.
+Each distribution-vector counter enters the feature tensor as its bin vector
+**normalized to a distribution** (bins sum to 1, separating composition from
+scale) *plus* three reduced summaries (mean-bin, entropy, top-bin fraction) and
+the total count as a separate standardized scalar. Per-bin values are not
+individually standardized (that would mix composition with scale); the
+normalized bins and the summaries are the features. Config can switch to
+summaries-only to cut input dimension. The chosen representation and the
+resulting per-group feature dimension are recorded in `meta.json`.
 
 ### 11.5 Imbalance and metrics
 
 - Training the fault-type head uses **class-balanced loss** (inverse-frequency
   weights; focal loss optional).
-- **Headline metric is macro-F1 and per-class recall, not accuracy** (a
-  Normal-always baseline scores ~55% accuracy and must be beaten on macro-F1).
+- **Headline metric is macro-F1 and per-class recall, not accuracy.** The
+  trivial Normal-always baseline achieves ~55% accuracy but near-zero macro-F1
+  (it scores nothing on the five fault classes); macro-F1 is therefore the
+  headline so a majority-class predictor cannot look strong.
 - Localization scored as top-k node accuracy; for transport-origin faults,
   where sibling cells share the broadcast transport features (§9), localization
   is scored at **gNB granularity**.
@@ -465,12 +497,15 @@ recorded in `meta.json`.
 
 ### 11.7 Determinism
 
-- Independent seeds for topology, OU dynamics, fault onset/injection, and the
-  train/val/test split, all derived from one master seed and recorded in
+- Independent seeds for topology, counter dynamics, fault onset/injection, and
+  the train/val/test split, all derived from one master seed and recorded in
   `meta.json`.
 - DataLoader workers are seeded per-worker to avoid cross-worker correlation.
-- `--quick` and full runs are byte-reproducible given the same master seed and
-  `config.yaml`.
+- The **data build** (`build_data`) is byte-reproducible given the same master
+  seed and `config.yaml`. **Training** is seed-stable but **not** guaranteed
+  bitwise-identical across GPU runs or hardware (CUDA/cuDNN atomics, DDP
+  all-reduce ordering); force deterministic algorithms for closest
+  reproducibility.
 
 ---
 
