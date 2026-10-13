@@ -10,9 +10,10 @@
 </div>
 
 `autofm` forecasts faults in 5G NR (Open RAN) networks *before they happen*, so
-operators can act ahead of impact. It reads standard PM/CM counters across the
-RAN, learns how a fault builds up, and raises an advisory that says **what** will
-fail, **where**, **when**, **why**, and **what to do**.
+operators can act ahead of impact. It reads multi-level telemetry across the
+deployment - infrastructure, platform, and RAN - learns how a fault builds up,
+and raises an advisory that says **what** will fail, **where**, **when**,
+**why**, and **what to do**.
 
 > Built at the **European AI Hackathon 2026** by team **AFM_Ericsson**.
 
@@ -32,26 +33,26 @@ fail, **where**, **when**, **why**, and **what to do**.
 
 ## The problem
 
-A single fault in a disaggregated RAN shows up at several levels at once:
+In a virtualized O-RAN deployment a single fault surfaces across levels at once:
 
-- **Radio** - the cell and carrier (NRCellDU, NRSectorCarrier)
-- **Service** - the centralized unit (NRCellCU: mobility, accessibility)
-- **Transport** - the user-plane links under the CU-UP
+- **Infrastructure** - the host (CPU, memory, temperature, power)
+- **Platform** - the network-function containers (CU, DU)
+- **RAN** - the cells, carriers, and user-plane transport
 
-**Watch only one level and you misdiagnose.** A transport packet-loss fault can
-look like a radio problem, when the real cause is a degrading user-plane link.
-Reactive, single-level monitoring names the wrong culprit - and only after the
-outage.
+**Watch only one level and you misdiagnose.** A RAN symptom (packet loss, rising
+latency) can look like a radio problem when the real cause is a host CPU
+throttling under a thermal spike. Reactive, single-level monitoring names the
+wrong culprit - and only after the outage.
 
 ## How it works
 
-`autofm` reads multi-level PM/CM counters and runs them through a pipeline that
+`autofm` reads multi-level telemetry and runs it through a pipeline that
 **compresses, forecasts, then classifies** the network state into a fault
 advisory:
 
 ```mermaid
 flowchart LR
-    A["Multi-level PM/CM counters<br/>(radio · service · transport)"] --> B["Compress<br/><i>learned representation</i>"]
+    A["Multi-level telemetry<br/>(infrastructure · platform · RAN)"] --> B["Compress<br/><i>learned representation</i>"]
     B --> C["Fuse topology<br/><i>graph attention</i>"]
     C --> D["Forecast<br/><i>temporal attention</i>"]
     D --> E["Classify + explain<br/><i>type · location · time-to-failure · cause</i>"]
@@ -70,7 +71,7 @@ The architecture and the dataset are specified in detail under
 | Document | What it covers |
 |----------|----------------|
 | [`docs/SYSTEM_DESIGN.md`](docs/SYSTEM_DESIGN.md) | System architecture, model, FM/PM/CM scope, evaluation |
-| [`docs/DATASET_SPEC.md`](docs/DATASET_SPEC.md) | PM/CM dataset schema, topology, fault model, labels, ML pipeline contract |
+| [`docs/DATASET_SPEC.md`](docs/DATASET_SPEC.md) | Multi-level (infrastructure / platform / RAN) dataset schema, topology, fault model, labels, ML pipeline contract |
 | [`docs/TEAM.md`](docs/TEAM.md) | Team and event |
 
 ## Hackathon goals
