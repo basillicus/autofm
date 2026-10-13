@@ -1,0 +1,21 @@
+# autofm — fully-resolved, exact dependency pins (REPRODUCIBLE INSTALL).
+#
+# *** PLACEHOLDER — not yet populated. ***
+#
+# To fill this in, on a Leonardo LOGIN node regenerate from env/requirements.in
+# via the shared env (canonical):
+#
+#     bash <SHARED_ENV_PATH>/setup_env.sh      # resolves + writes requirements.lock
+#
+# Or, as a manual fallback, freeze the already-activated shared env:
+#
+#     source <SHARED_ENV_PATH>/activate.sh
+#     pip freeze > env/requirements.lock
+#
+# Then commit the result. Do NOT hand-edit the pins.
+#
+# Until populated, the repo-root requirements.txt installs the direct deps
+# (env/requirements.in), so this works today:
+#
+#     pip install -r requirements.txt
+#
