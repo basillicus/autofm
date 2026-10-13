@@ -76,9 +76,8 @@ Team AFM_Ericsson · European AI Hackathon 2026
 O-RAN's disaggregated architecture spreads a single fault across levels: a fault
 can originate at the **transport** layer (CU-UP user-plane links), manifest at
 the **radio** layer (DU/carrier), and surface as a **service** symptom (CU
-mobility and accessibility) - causing cross-level misdiagnosis. Traditional
-fault management is reactive and siloed, and watching one level in isolation
-mislabels the cause.
+mobility and accessibility) - causing cross-level misdiagnosis. Reactive,
+single-level monitoring mislabels the cause.
 
 **autofm predicts faults before they occur, and identifies where, when, why, and
 what to do about it.**
@@ -275,8 +274,8 @@ flowchart LR
 **Core:** Python 3.14+, PyTorch >= 2.10, PyTorch Geometric, NumPy, Pandas,
 scikit-learn, SciPy, XGBoost, MAPIE, matplotlib, networkx.
 
-**Supercomputer only:** CUDA 12.x, Ray Tune / Optuna, TensorBoard, NVIDIA
-Nsight, PyTorch DDP.
+**GPU / scale-out:** CUDA 12.x, Ray Tune / Optuna, TensorBoard, NVIDIA Nsight,
+PyTorch DDP.
 
 ---
 
@@ -316,7 +315,7 @@ set relative to that baseline rather than stated as absolute figures in advance.
 | Oct 11-13 | MAE + PatchTST + fault-type head. Mentor update. |
 | Oct 14-16 | GAT + localization + TTF heads |
 | Oct 17-19 | Evidential DL + conformal calibration |
-| Oct 20-22 | Supercomputer: sweep + horizon test |
+| Oct 20-22 | HPO sweep + horizon test |
 | Oct 23-25 | FM/PM/CM advisory loop |
 | Oct 26-29 | Polish, ablation, demo, final submission |
 
