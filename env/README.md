@@ -1,4 +1,4 @@
-# `env/` — Environment-Specific Files
+# `env/` - Environment-Specific Files
 
 This directory is the single home for the environment-specific, version-controlled
 files for `autofm`, kept out of the repo root to avoid clutter. Anything that
@@ -24,7 +24,7 @@ files for `autofm`, kept out of the repo root to avoid clutter. Anything that
 | File | Purpose | Source of truth |
 |------|---------|-----------------|
 | `requirements.in` | Top-level (direct) dependencies, loosely pinned. Edit when adding a package. | This repo |
-| `requirements.lock` | Fully-resolved exact pins — the reproducible install. Generated on Leonardo. | Leonardo shared env |
+| `requirements.lock` | Fully-resolved exact pins - the reproducible install. Generated on Leonardo. | Leonardo shared env |
 | `train.sbatch` | SLURM training-job template (account / partition / QoS as placeholders). | This repo (template) |
 | `.env.example` | Per-user / per-cluster values (SLURM account, cluster paths). Copy to `.env`. | This repo (template) |
 
@@ -48,7 +48,7 @@ bash <SHARED_ENV_PATH>/setup_env.sh                    # 2. regenerate the lock 
 ```
 
 Never hand-edit `requirements.lock`, and never `pip install` ad hoc into the
-shared Leonardo env — both cause silent version drift. Full setup steps are in
+shared Leonardo env - both cause silent version drift. Full setup steps are in
 [`../docs/ENVIRONMENT_SETUP.md`](../docs/ENVIRONMENT_SETUP.md).
 
 ---
@@ -63,15 +63,15 @@ your own:
 cp env/.env.example .env     # .env is git-ignored; only .env.example is committed
 ```
 
-Model and data settings do **not** go here — they live in `config.yaml` at the
+Model and data settings do **not** go here - they live in `config.yaml` at the
 repo root.
 
 ---
 
 ## 4. What is *not* here
 
-- `activate.sh`, `setup_env.sh` — cluster-side scripts inside the team's shared
+- `activate.sh`, `setup_env.sh` - cluster-side scripts inside the team's shared
   Leonardo env (`<SHARED_ENV_PATH>/`), not project source.
-- `config.yaml` — model/data hyperparameters live at the repo root; `env/` is for
+- `config.yaml` - model/data hyperparameters live at the repo root; `env/` is for
   *environment* concerns (dependencies, cluster, paths) only.
-- `.venv/` — local virtual environments are git-ignored; never commit them.
+- `.venv/` - local virtual environments are git-ignored; never commit them.
