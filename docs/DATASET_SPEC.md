@@ -14,7 +14,7 @@ Team AFM_Ericsson · European AI Hackathon 2026
 4. [RAN level](#4-ran-level)
 5. [Topology and cross-level coupling](#5-topology-and-cross-level-coupling)
 6. [Cadence](#6-cadence)
-7. [Dynamics](#7-dynamics)
+7. [Dynamics](#7-dynamics-observed-properties)
 8. [Fault model](#8-fault-model)
 9. [Labels](#9-labels-per-entity-per-rop)
 10. [Output format](#10-output-format)
@@ -32,9 +32,9 @@ format.
 The dataset is **multi-level**, spanning the three levels of a virtualized 5G NR
 O-RAN deployment, each described in its own section:
 
-- **Infrastructure** (§2) - host (O-Cloud) metrics.
-- **Platform** (§3) - container (network-function) metrics.
-- **RAN** (§4) - 5G NR performance (PM) and configuration (CM) counters.
+- **Infrastructure** ([§2](#2-infrastructure-level)) - host (O-Cloud) metrics.
+- **Platform** ([§3](#3-platform-level)) - container (network-function) metrics.
+- **RAN** ([§4](#4-ran-level)) - 5G NR performance (PM) and configuration (CM) counters.
 
 The **RAN** level follows 3GPP 5G NR models: the managed-object model (gNB with
 the CU-CP / CU-UP / DU split, NR cells, carriers) aligns with the 3GPP 5G NRM
@@ -58,7 +58,7 @@ levels and the multi-level fault model follow the FALCON approach (host/containe
 telemetry + cross-level fault injection). All values are produced by the dataset
 build - no raw records are used.
 
-All levels share a common file convention (§10): per-level, per-day
+All levels share a common file convention ([§10](#10-output-format)): per-level, per-day
 `;`-delimited CSVs with 6 metadata columns (`fdn, mecontext, cell,
 rdiTimestamp, rdiTimestampTZ, ropCount`), so one loader reads every level.
 
@@ -70,7 +70,7 @@ rdiTimestamp, rdiTimestampTZ, ropCount`), so one loader reads every level.
 ## 2. Infrastructure level
 
 Host / O-Cloud telemetry. **Entity = host**, each serving one or more gNBs
-(default 2 gNBs/host). Emitted per ROP (§6).
+(default 2 gNBs/host). Emitted per ROP ([§6](#6-cadence)).
 
 | Group | Metric families | Entity |
 |-------|-----------------|--------|
@@ -79,15 +79,15 @@ Host / O-Cloud telemetry. **Entity = host**, each serving one or more gNBs
 - Names are standard host telemetry (node-exporter style), **not 3GPP**; the
   exact metric set is configurable (default ~10-15 metrics).
 - All scalar; no distribution-vector counters at this level.
-- The host level is the origin of **CPU-stress** faults (§8), which propagate
-  down the host → container → RAN chain (§5).
+- The host level is the origin of **CPU-stress** faults ([§8](#8-fault-model)), which propagate
+  down the host → container → RAN chain ([§5](#5-topology-and-cross-level-coupling)).
 
 ---
 
 ## 3. Platform level
 
 Container / network-function telemetry. **Entity = NF container**, one per CU
-and one per DU. Emitted per ROP (§6).
+and one per DU. Emitted per ROP ([§6](#6-cadence)).
 
 | Group | Metric families | Entity |
 |-------|-----------------|--------|
@@ -96,7 +96,7 @@ and one per DU. Emitted per ROP (§6).
 - Names are standard container telemetry (cAdvisor style), **not 3GPP**;
   configurable set (default ~10-15 metrics).
 - All scalar.
-- The platform level is the origin of **memory-stress** faults (§8), which
+- The platform level is the origin of **memory-stress** faults ([§8](#8-fault-model)), which
   surface as NF instability and RAN symptoms.
 
 ---
@@ -104,7 +104,7 @@ and one per DU. Emitted per ROP (§6).
 ## 4. RAN level
 
 5G NR performance (PM) and configuration (CM) data, largely following 3GPP 5G NR
-models (with the NSA/transport caveats noted in §5).
+models (with the NSA/transport caveats noted in [§5](#5-topology-and-cross-level-coupling)).
 
 ### 4.1 PM counter groups
 
@@ -133,7 +133,7 @@ reference schema.)
 > two-timestamp pattern; some links report once) and RpUserPlaneLink ~4,100 rows
 > across ≈2,300 distinct link FDNs - IP-pair links under `GNBCUUPFunction`, not
 > 309 cells. They do not map 1:1 to cells and require an aggregation rule (roll
-> up to the owning gNB / CUUP) before joining to a cell-indexed tensor (§10).
+> up to the owning gNB / CUUP) before joining to a cell-indexed tensor ([§10](#10-output-format)).
 
 ### 4.2 Counter families
 
@@ -187,7 +187,7 @@ cells (provisioned, no PM in this window).
 ### 4.4 Reference-data notes
 
 These describe the **source export** the RAN schema is modelled on (and that the
-loader, §11, must tolerate) - not the generated dataset's output, which is clean
+loader, [§11](#11-loader-requirements), must tolerate) - not the generated dataset's output, which is clean
 and per-ROP.
 
 - **Reference rows/day.** The source daily file holds **two rows per entity per
@@ -201,7 +201,7 @@ and per-ROP.
   doubled-up filename (`NRCellCU_attributesMcfbCellProfile...`), a date typo
   (`2025-1-01`), a missing-date file (`NRCellCU_counters.csv`), a mangled
   extension (`..._2025-10-27csv.csv`), some groups missing days (NRCellCU 29/31,
-  S1ULink 30/31), and ragged rows (trailing `;`). The loader (§11) is defensive
+  S1ULink 30/31), and ragged rows (trailing `;`). The loader ([§11](#11-loader-requirements)) is defensive
   about all of these.
 
 ---
@@ -237,7 +237,7 @@ SubNetwork=NET
 - **Cross-level mapping.** Each gNB's CU/DU NFs run as containers (platform) on a
   host (infrastructure); each gNB owns RAN cells and transport links. A host maps
   to its gNBs, each gNB to its containers and its cells/transport. This chain
-  carries cross-level faults (§8).
+  carries cross-level faults ([§8](#8-fault-model)).
 - The `fdn` nests SubNetworks (`SubNetwork=NET, SubNetwork=RAN,
   SubNetwork=REGION_B, ...`): the top two are fixed, the regions are children.
 - NRCellCU/NRCellDU/NRSectorCarrier for a given cell share the same (gNB,
@@ -269,14 +269,14 @@ the graph sparse and avoid a ~5,600-edge clique at the top level.
 
 **Default ML-tensor shape:** 60 cells × 1,344 ROPs × F, where **F** is the
 per-cell feature dimension = RAN scalar counters (NRCellDU/NRCellCU/
-NRSectorCarrier) + expanded distribution-vector features (§12.4) + broadcast
-per-gNB transport counters (§10) + the host (infra) and container (platform)
+NRSectorCarrier) + expanded distribution-vector features ([§12.4](#124-distribution-vector-representation)) + broadcast
+per-gNB transport counters ([§10](#10-output-format)) + the host (infra) and container (platform)
 metrics attached via the host → container → RAN chain. F is on the order of a few
 thousand (247 is NRCellDU's own counter count alone); the exact value is produced
 by the feature builder and recorded in `meta.json`.
 
 **F is the raw, pre-compression input dimension - not what the classifier sees.**
-The MAE (design doc §6) compresses each per-ROP feature vector to a **32-dim
+The MAE (design doc [§6](#6-cadence)) compresses each per-ROP feature vector to a **32-dim
 latent**; the GAT/PatchTST/heads operate on that latent, so the operative
 dimensionality downstream is ~32, well below the sample count (≈80k cell-ROPs at
 smoke scale). Raw F being large is expected and is the reason the pipeline leads
@@ -338,25 +338,25 @@ grounded in metric behaviour.
 The **CPU Stress** and **Memory Stress** faults are the cross-level cases: they
 originate in the infra/platform levels and surface as RAN symptoms - exactly the
 misdiagnosis a RAN-only view gets wrong. "Propagates to" effects reference
-metrics in the modelled set (§2-§4).
+metrics in the modelled set ([§2](#2-infrastructure-level)-[§4](#4-ran-level)).
 
 **Label vs feature decoupling (leakage control).** The fault label corresponds to
 a **latent severity state** `z(t) ∈ [0,1]` per entity that is **not an observable
 metric**. The signature metrics correlate with `z` only **partially and noisily**
 (a monotone-but-noisy relationship with per-metric gain `g < 1`, plus the
-mean-reverting noise of §7), so **no input feature equals or thresholds the
+mean-reverting noise of [§7](#7-dynamics-observed-properties)), so **no input feature equals or thresholds the
 label**. The hard class boundary sits on the hidden `z`, not on any metric the
 model sees - preventing a model from recovering the labeling rule from its own
 inputs (which would make accuracy a tautology). `z` is **recorded in `meta` for
 audit and is never a feature**.
 
 This applies to **every** fault class, including Packet-Loss and the broadcast
-transport counters (§10.1): the broadcast `pmPdcpPktLoss*` feature is itself a
+transport counters ([§10.1](#101-optional-derived-ml-view)): the broadcast `pmPdcpPktLoss*` feature is itself a
 noisy, gain-limited function of the transport `z`, so even though the fault label
-is attached to all sibling cells under the gNB (§9), no cell sees a counter that
+is attached to all sibling cells under the gNB ([§9](#9-labels-per-entity-per-rop)), no cell sees a counter that
 directly equals or thresholds its label. The broadcast makes transport faults
 **gNB-localizable but not trivially separable** - localization is therefore
-scored at gNB granularity (§12.5), and classification still relies on the
+scored at gNB granularity ([§12.5](#125-imbalance-and-metrics)), and classification still relies on the
 noisy-`z` signal rather than a clean feature→label shortcut.
 
 **Degradation ramp and horizon alignment.** Before a label flips, `z` rises
@@ -367,7 +367,7 @@ precursor therefore exists throughout the evaluated range. Fault onset (ramp
 start) follows a slow per-entity hazard, so pre-ramp drift is also present. The
 horizon-degradation curve is defined over `m ≤ ramp length`.
 
-**Window vs ramp vs horizon.** The lookback window (§12.3, default 60 ROPs) need
+**Window vs ramp vs horizon.** The lookback window ([§12.3](#123-windowing), default 60 ROPs) need
 not contain the whole ramp. At horizon `m`, the model sees the window ending `m`
 ROPs before the flip, so for `m` approaching the ramp length only the *earliest,
 faintest* part of the ramp is visible - which is what makes the
@@ -398,12 +398,12 @@ carrier, transport link), so a fault at any level can name its true origin.
 | `ramp_progress` | 0.0 → 1.0 across the ramp (0.0 when not degrading) |
 
 In the primary `fm/` CSV files these are plain columns (FDN strings,
-pipe-delimited path). In the optional derived Parquet view (§10.1) node FDNs are
+pipe-delimited path). In the optional derived Parquet view ([§10.1](#101-optional-derived-ml-view)) node FDNs are
 mapped to int codes via a codebook in `meta.json`, and `causal_path` becomes a
 list column.
 
 A fault whose origin is not a cell (host, container, transport) is attached to
-the affected cells (via the host → container → RAN mapping of §5) so it is
+the affected cells (via the host → container → RAN mapping of [§5](#5-topology-and-cross-level-coupling)) so it is
 learnable from the cell-indexed tensor, while `fault_origin_node` still records
 the true origin. Specifically: a **host** fault attaches to all cells under all
 gNBs on that host; a **container** fault attaches to the cells of its gNB (CU
@@ -416,13 +416,13 @@ regression target**. The TTF (quantile) head is trained with its loss **masked
 to degrading rows** (`is_degrading = 1`); Normal/non-degrading rows contribute no
 TTF loss. Omitting this mask would collapse the regressor toward `-1`.
 
-Because TTF counts down over the ramp (§8), it is **bounded in `[0, ramp_len]`**
+Because TTF counts down over the ramp ([§8](#8-fault-model)), it is **bounded in `[0, ramp_len]`**
 (default ≤ 150 ROPs); the head cannot - and is not asked to - predict failures
-beyond the ramp. Consequently **TTF RMSE (design doc §10) is defined only over
+beyond the ramp. Consequently **TTF RMSE (design doc [§10](#10-output-format)) is defined only over
 degrading rows within the ramp**, not over the full horizon; a low RMSE should be
 read as "accurate once a precursor exists," not "accurate at arbitrary lead."
 
-**Window labeling.** For a windowed sample (§12), the target is the window's
+**Window labeling.** For a windowed sample ([§12](#12-ml-pipeline-contract)), the target is the window's
 **last timestep** (causal, no look-ahead); a window straddling a ramp-to-flip
 transition is labeled by its final step, so pre-flip windows carry the pre-flip
 label with `is_degrading`/`ramp_progress` describing the approach.
@@ -469,15 +469,15 @@ dataset/
   `=GNB001-CU` for platform. All metrics are scalar (no distribution vectors).
 - **`fm/` label files** are emitted **per level** (`HostMetrics_labels_*`,
   `ContainerMetrics_labels_*`, `NRCellDU_labels_*`, ...), each row joined to its
-  data row by `(fdn, rdiTimestamp)` and carrying the six labels of §9. Keeping
+  data row by `(fdn, rdiTimestamp)` and carrying the six labels of [§9](#9-labels-per-entity-per-rop). Keeping
   labels in a separate tree leaves the data trees in their native format.
 
   Note the three coexisting delimiters in RAN files: `;` between fields, `,`
-  within a distribution-vector field, and `|` within `causal_path` (§9) - loaders
+  within a distribution-vector field, and `|` within `causal_path` ([§9](#9-labels-per-entity-per-rop)) - loaders
   must handle all three. Infra/platform/`fm` files use only `;` (and `|` for
   `causal_path`).
 - **Cadence:** per-day foldering across all trees; one row per entity per ROP
-  (§6), so a day holds up to 96 rows per entity (vs the reference RAN export's
+  ([§6](#6-cadence)), so a day holds up to 96 rows per entity (vs the reference RAN export's
   two daily-aggregate rows).
 
 A single loader reads all five trees: it keys every row on `fdn` + `rdiTimestamp`
@@ -490,7 +490,7 @@ cache, not the primary format):
 
 - `features.parquet` - tensor `(entity, rop, feature)` across all levels; cell
   counters indexed directly, transport counters aggregated per gNB CUUP and
-  broadcast to the gNB's cells (§4.1), host/container metrics attached via the
+  broadcast to the gNB's cells ([§4.1](#41-pm-counter-groups)), host/container metrics attached via the
   host → container → RAN chain, with a parallel **mask channel** (0 = present,
   1 = missing) for sensor-dropout and missing days.
 - `labels.parquet` - the six labels; `topology.json` - typed nodes + edges for
@@ -507,7 +507,7 @@ Everything is seeded from `config.yaml`; `--quick` emits a tiny smoke dataset
 
 The loader is defensive by design: it excludes the 10-01 outlier, tolerates
 missing days (NRCellCU 29/31, S1ULink 30/31), handles ragged rows and the
-misnamed/duplicate files noted in §4.4, parses entity identity from `fdn` when
+misnamed/duplicate files noted in [§4.4](#44-reference-data-notes), parses entity identity from `fdn` when
 the `cell` column is blank, and reads all four data trees (infra / platform / pm
 / cm) through one code path.
 
@@ -530,12 +530,12 @@ reported metrics trustworthy (no leakage) and reproducible.
   - *temporal* (default): all entities in all splits, split only on time - tests
     forecasting on known entities.
   - *entity-holdout*: a disjoint set of gNBs reserved for val/test - tests
-    generalization to unseen cells. Inter-site kNN handover edges (§5.1) are
+    generalization to unseen cells. Inter-site kNN handover edges ([§5.1](#51-gat-graph)) are
     **not drawn across the holdout boundary**.
 - A **calibration slice** is held out for Conformal Prediction, never used for
   gradient updates. Taken from the end of train (adjacent to val/test); under
   temporal drift calibration and test are only approximately exchangeable, so the
-  coverage guarantee is **approximate, not exact** (§12.5).
+  coverage guarantee is **approximate, not exact** ([§12.5](#125-imbalance-and-metrics)).
 
 ### 12.2 Normalization (fit on train only)
 
@@ -543,9 +543,9 @@ reported metrics trustworthy (no leakage) and reproducible.
   `log1p` for heavy-tailed count/volume metrics - PDCP volumes, UE sums) per
   metric column, estimated across all **train** entities and ROPs.
 - Statistics computed on the **train split only**, applied unchanged to
-  val/test/calibration. Under entity-holdout (§12.1) held-out entities are
+  val/test/calibration. Under entity-holdout ([§12.1](#121-split-leakage-safe)) held-out entities are
   normalized with the same global-per-metric stats, so there is no per-entity
-  stat to leak; the **entity-specific baseline (§7) is left in the signal** for
+  stat to leak; the **entity-specific baseline ([§7](#7-dynamics-observed-properties)) is left in the signal** for
   the model to learn, not normalized away.
 - Stored in `meta.json`.
 
@@ -554,7 +554,7 @@ reported metrics trustworthy (no leakage) and reproducible.
 - Fixed-length lookback windows for PatchTST (default length **60 ROPs**,
   `patch_size=5` → 12 patches), stride 1 within an entity, **never crossing
   entity boundaries**.
-- Causal labeling per §9 (target = window's last step). Windows built **after**
+- Causal labeling per [§9](#9-labels-per-entity-per-rop) (target = window's last step). Windows built **after**
   the split so none spans the train/val/test boundary.
 - Training uses stride 1; **val/test use non-overlapping windows**
   (stride = window length) so near-duplicate windows do not inflate the effective
@@ -574,7 +574,7 @@ in `meta.json`.
 
 - The fault-type head uses **class-balanced loss** (inverse-frequency weights;
   focal loss optional) for **training only**. The conformal calibration slice
-  (§12.1) uses the **natural (unweighted) class distribution** - reweighting is
+  ([§12.1](#121-split-leakage-safe)) uses the **natural (unweighted) class distribution** - reweighting is
   not applied to calibration scores, so the coverage guarantee is computed on the
   distribution the model actually meets at inference.
 - **Headline metric is macro-F1 and per-class recall, not accuracy.** The trivial
@@ -582,7 +582,7 @@ in `meta.json`.
   nothing on the 7 fault classes); macro-F1 is therefore the headline so a
   majority-class predictor cannot look strong.
 - Localization scored as top-k node accuracy; for non-cell-origin faults, where
-  sibling cells share broadcast host/container/transport features (§5, §10),
+  sibling cells share broadcast host/container/transport features ([§5](#5-topology-and-cross-level-coupling), [§10](#10-output-format)),
   localization is scored at **gNB / host granularity** as appropriate.
 
 ### 12.6 Scale and per-class counts
