@@ -61,7 +61,7 @@ Team AFM_Ericsson · European AI Hackathon 2026
 | **Aleatoric uncertainty** | Uncertainty from inherent data noise (irreducible). |
 | **Epistemic uncertainty** | Uncertainty from the model/limited data (reducible). |
 | **Conformal Prediction** | Distribution-free, model-agnostic wrapper giving calibrated coverage sets. |
-| **Coverage** | Fraction of cases the prediction set is guaranteed to contain the true label (e.g., 95%). |
+| **Coverage** | The target fraction the prediction set is calibrated to contain the true label (e.g., 95%); exact under exchangeability, approximate under temporal drift. |
 | **OU-like** | Ornstein-Uhlenbeck - mean-reverting autocorrelation observed in the counter time-series. |
 | **Horizon (m)** | Forecast lead time in ROPs (e.g., m=5 to 120). |
 | **Checkpoint** | Saved trained model weights. |
@@ -105,7 +105,7 @@ core extends to PM and CM.
 | **Temporal model** | PatchTST (parallel, interpretable) | GPU-friendly, attention-based |
 | **Topology** | Graph Attention Network | Enables localization + causality |
 | **Classification** | Evidential Deep Learning (joint) | Uncertainty + end-to-end training |
-| **Calibration** | Conformal Prediction | Distribution-free coverage guarantee |
+| **Calibration** | Conformal Prediction | Distribution-free, calibrated coverage |
 | **Output** | Type + location + TTF + cause + action | Complete advisory |
 
 ---
@@ -116,7 +116,7 @@ The pipeline ingests multi-level 5G NR PM/CM counters over a 3GPP-aligned
 topology (gNB → CU/DU/SectorCarrier + transport), compresses them, forecasts
 their trajectory, and classifies the resulting state into a fault advisory. The
 dataset, its schema, and the default/full scale are defined in the dataset
-specification (DS §3).
+specification (DS §4 schema, §5 topology/scale).
 
 > **Diagram 1**
 
@@ -199,7 +199,7 @@ Four parallel heads on the shared backbone:
 Post-hoc wrapper. Distribution-free and model-agnostic. Produces **calibrated**
 coverage sets at a nominal level (e.g., 95%); coverage is exact under
 exchangeability and approximate under the temporal split used here (dataset spec
-§11.1).
+§12.1).
 
 ---
 
@@ -288,7 +288,7 @@ PyTorch DDP.
 
 **Data split:** Chronological (60% train / 20% val / 20% test), val/test strictly
 after train, with a held-out calibration slice for conformal prediction. No
-future leakage. See the dataset spec (§11) for the full pipeline contract.
+future leakage. See the dataset spec (§12) for the full pipeline contract.
 
 **Tests:** Unit (pytest), integration (end-to-end shape checks), regression
 (baseline holds), ablation (with/without each component), horizon degradation
@@ -309,7 +309,7 @@ raw accuracy):
 Targets are set relative to the `falcon` baseline once it runs on the dataset,
 rather than stated as absolute figures in advance. The conformal nominal
 coverage level is a design parameter; realised coverage is validated
-empirically and is approximate under the temporal split (dataset spec §11.1).
+empirically and is approximate under the temporal split (dataset spec §12.1).
 
 ---
 
