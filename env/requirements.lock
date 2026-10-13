@@ -1,6 +1,6 @@
-# autofm — fully-resolved, exact dependency pins (REPRODUCIBLE INSTALL).
+# autofm - fully-resolved, exact dependency pins (REPRODUCIBLE INSTALL).
 #
-# *** PLACEHOLDER — not yet populated. ***
+# *** PLACEHOLDER - not yet populated. ***
 #
 # To fill this in, on a Leonardo LOGIN node regenerate from env/requirements.in
 # via the shared env (canonical):
