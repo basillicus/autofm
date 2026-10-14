@@ -1,4 +1,4 @@
-# autofm — install entry point.
+# autofm - install entry point.
 #
 # The authoritative dependency definitions live in env/:
 #   - env/requirements.in    top-level (direct) dependencies  <-- installed below

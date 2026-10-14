@@ -1,4 +1,4 @@
-# autofm — top-level (direct) dependencies.
+# autofm - top-level (direct) dependencies.
 #
 # Edit THIS file when adding a package, then regenerate requirements.lock
 # on Leonardo via the shared env's setup_env.sh. Keep pins loose here;
