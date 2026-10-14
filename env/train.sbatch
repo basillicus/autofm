@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==========================================================================
-# autofm — Leonardo (CINECA) SLURM job template
+# autofm - Leonardo (CINECA) SLURM job template
 # ==========================================================================
 # See docs/ENVIRONMENT_SETUP.md §4.
 #
