@@ -1,0 +1,25 @@
+# autofm FM pipeline configuration.
+# All knobs for the end-to-end run live here. Widen the data knobs for a full
+# run on Leonardo; keep them small for a local CPU/MPS smoke test.
+
+# ---- Dataset ----
+dataset_root: "./Documents/hackathon/autofm-dataset-ie"
+max_days: 14        # number of days to load (null-equivalent: raise toward 182)
+max_gnbs: 40        # cap on gNBs (raise toward ~100 for full scale)
+
+# ---- Labeling ----
+horizon: 5          # forecast horizon in ROPs (15-min steps); 5 = 75 min ahead
+
+# ---- Windowing ----
+window_k: 32        # lookback window length in ROPs
+
+# ---- Compression ----
+latent_dim: 32      # compressed per-ROP latent size
+compressor: "mae"   # "pca" (fast baseline) | "mae" (autofm design)
+mae_epochs: 6
+
+# ---- Classifier ----
+clf_epochs: 12
+
+# ---- Reproducibility ----
+seed: 42
