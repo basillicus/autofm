@@ -17,6 +17,8 @@ window_k: 32        # lookback window length in ROPs
 latent_dim: 32      # compressed per-ROP latent size
 compressor: "mae"   # "pca" (fast baseline) | "mae" (autofm design)
 mae_epochs: 6
+amp: true           # mixed precision - CUDA only (ignored on CPU/MPS)
+num_workers: 8      # DataLoader workers for MAE training
 
 # ---- Classifier ----
 clf_epochs: 12

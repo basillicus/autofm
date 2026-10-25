@@ -53,9 +53,9 @@ echo "---------------------------"
 cd <PROJECT_PATH>/<your-project-dir>
 
 # Single-GPU training (default)
-python -m autofm.pipeline.train --config config.yaml
+python -m autofm.train_mae --config config_autofm.yaml
 
 # --- Multi-GPU (whole node, 4x A100) --------------------------------------
 # Uncomment below and set --gres=gpu:4 above:
-#   torchrun --nproc_per_node=4 -m autofm.pipeline.train --config config.yaml
+#   torchrun --nproc_per_node=4 -m autofm.train_mae --config config_autofm.yaml
 # Get single-GPU correct first.

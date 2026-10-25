@@ -106,6 +106,9 @@ class MAECompressor:
     batch_size: int = 512
     lr: float = 1e-3
     seed: int = 42
+    amp: bool = True
+    num_workers: int = 0
+    pin_memory: bool | None = None
 
     def __post_init__(self) -> None:
         if not _HAS_TORCH:
@@ -118,29 +121,65 @@ class MAECompressor:
         self._net: "_MAENet | None" = None
 
     def fit(self, X_train: np.ndarray) -> "MAECompressor":
+        from torch.utils.data import DataLoader, TensorDataset
+
+        # TF32 speeds up fp32 matmuls/convs on Ampere+ GPUs (no-op elsewhere).
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
         flat = _flatten_time(X_train).astype(np.float32)
-        in_dim = flat.shape[1]
-        self._net = _MAENet(in_dim, self.latent_dim).to(self.device)
+        self._net = _MAENet(flat.shape[1], self.latent_dim).to(self.device)
         opt = torch.optim.Adam(self._net.parameters(), lr=self.lr)
         loss_fn = nn.MSELoss()
-        data = torch.from_numpy(flat)
-        n = len(data)
 
+        # AMP + pinned memory + NVTX are CUDA-only; on CPU/MPS they stay off so
+        # the same code runs unchanged on a laptop.
+        is_cuda = self.device.type == "cuda"
+        use_amp = bool(self.amp) and is_cuda
+        pin = self.pin_memory if self.pin_memory is not None else is_cuda
+
+        g = torch.Generator().manual_seed(self.seed)
+        loader = DataLoader(
+            TensorDataset(torch.from_numpy(flat)),
+            batch_size=self.batch_size, shuffle=True, generator=g,
+            num_workers=self.num_workers, pin_memory=pin,
+            persistent_workers=(self.num_workers > 0),
+        )
+        scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+        def _push(t):
+            if is_cuda:
+                torch.cuda.nvtx.range_push(t)
+
+        def _pop():
+            if is_cuda:
+                torch.cuda.nvtx.range_pop()
+
+        n = len(flat)
         self._net.train()
         for epoch in range(self.epochs):
-            perm = torch.randperm(n)
+            _push(f"mae/epoch_{epoch}")
             total = 0.0
-            for i in range(0, n, self.batch_size):
-                idx = perm[i:i + self.batch_size]
-                xb = data[idx].to(self.device)
+            for (xb,) in loader:
+                xb = xb.to(self.device, non_blocking=pin)
                 # Random mask: zero a fraction of inputs, reconstruct the full row.
                 mask = (torch.rand_like(xb) > self.mask_frac).float()
-                recon = self._net(xb * mask)
-                loss = loss_fn(recon, xb)
-                opt.zero_grad()
-                loss.backward()
-                opt.step()
+                opt.zero_grad(set_to_none=True)
+                _push("mae/forward")
+                with torch.autocast(device_type="cuda", dtype=torch.float16,
+                                    enabled=use_amp):
+                    recon = self._net(xb * mask)
+                    loss = loss_fn(recon, xb)
+                _pop()
+                _push("mae/backward")
+                scaler.scale(loss).backward()
+                _pop()
+                _push("mae/optim")
+                scaler.step(opt)
+                scaler.update()
+                _pop()
                 total += loss.item() * len(xb)
+            _pop()
             print(f"  [MAE] epoch {epoch + 1}/{self.epochs} "
                   f"recon_mse={total / n:.4f}")
         return self

@@ -42,6 +42,8 @@ DEFAULT_CONFIG = {
     "latent_dim": 32,
     "compressor": "mae",          # "pca" | "mae"
     "mae_epochs": 6,
+    "amp": True,                  # mixed precision (CUDA only; ignored on CPU/MPS)
+    "num_workers": 8,             # DataLoader workers for MAE training
     "clf_epochs": 12,
     "seed": 42,
 }
@@ -80,6 +82,8 @@ def run(cfg: dict) -> dict:
     comp_kw = {"seed": cfg["seed"]}
     if cfg["compressor"] == "mae":
         comp_kw["epochs"] = cfg["mae_epochs"]
+        comp_kw["amp"] = cfg.get("amp", True)
+        comp_kw["num_workers"] = cfg.get("num_workers", 0)
     comp = build_compressor(cfg["compressor"], latent_dim=cfg["latent_dim"], **comp_kw)
     comp.fit(prep.train.X)
     Ztr = comp.transform(prep.train.X)
