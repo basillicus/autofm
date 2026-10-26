@@ -3,6 +3,11 @@
 .env.*
 !env/.env.example
 
+# --- local machine configs (never commit laptop paths / personal info) ---
+config_local.yaml
+config_*.local.yaml
+*.local.yaml
+
 # --- virtual environments ---
 .venv/
 venv/

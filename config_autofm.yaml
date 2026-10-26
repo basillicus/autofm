@@ -3,7 +3,10 @@
 # run on Leonardo; keep them small for a local CPU/MPS smoke test.
 
 # ---- Dataset ----
-dataset_root: "./Documents/hackathon/autofm-dataset-ie"
+# Neutral default (no machine-specific paths committed). Override per machine:
+#   local:    --config config_local.yaml   (gitignored; your laptop path)
+#   Leonardo: --config config_leonardo.yaml (cluster scratch path)
+dataset_root: "./data/autofm-dataset-ie"
 max_days: 14        # number of days to load (null-equivalent: raise toward 182)
 max_gnbs: 40        # cap on gNBs (raise toward ~100 for full scale)
 

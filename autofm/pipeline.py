@@ -34,7 +34,7 @@ from autofm.model.classifier import TemporalClassifier
 from autofm.model.compress import build_compressor
 
 DEFAULT_CONFIG = {
-    "dataset_root": "./Documents/hackathon/autofm-dataset-ie",
+    "dataset_root": "./data/autofm-dataset-ie",
     "max_days": 14,
     "max_gnbs": 40,
     "horizon": 5,
