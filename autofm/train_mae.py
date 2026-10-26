@@ -23,7 +23,10 @@ and each process keeps its own ``GradScaler``.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import statistics
+import time
 from pathlib import Path
 
 import numpy as np
@@ -76,10 +79,57 @@ def _cleanup(is_distributed: bool) -> None:
         torch.distributed.destroy_process_group()
 
 
+def _write_bench(bench_out, step_ms, local_batch, world_size, is_distributed,
+                 device, is_main, log) -> None:
+    """Aggregate throughput across ranks and write a JSON on rank 0.
+
+    Each rank measures its own median step time -> local samples/sec
+    (``local_batch / median_step``). Total throughput is the sum across ranks:
+    with DDP every rank processes ``local_batch`` samples per step in parallel.
+    We ``all_reduce(SUM)`` the per-rank rate so the number is correct even if
+    ranks run at slightly different speeds; the reported median_step_ms is the
+    max (slowest) rank, which is what actually bounds a synchronized step.
+    """
+    if not step_ms:
+        if is_main:
+            log("[bench] no timed steps recorded (increase steps/epochs); "
+                "skipping bench output")
+        return
+
+    local_median_ms = statistics.median(step_ms)
+    local_rate = local_batch / (local_median_ms / 1000.0)
+
+    if is_distributed:
+        rate_t = torch.tensor([local_rate], dtype=torch.float64, device=device)
+        ms_t = torch.tensor([local_median_ms], dtype=torch.float64, device=device)
+        torch.distributed.all_reduce(rate_t, op=torch.distributed.ReduceOp.SUM)
+        torch.distributed.all_reduce(ms_t, op=torch.distributed.ReduceOp.MAX)
+        total_rate = float(rate_t.item())
+        median_ms = float(ms_t.item())
+    else:
+        # Single process: total throughput == its own rate (world_size is 1).
+        total_rate = local_rate * world_size
+        median_ms = local_median_ms
+
+    if is_main:
+        payload = {
+            "world_size": world_size,
+            "gpus": world_size,
+            "median_step_ms": round(median_ms, 3),
+            "samples_per_sec": round(total_rate, 1),
+        }
+        out_path = Path(bench_out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(payload, indent=2))
+        log(f"[bench] median {median_ms:.2f} ms/step  "
+            f"{total_rate:.0f} samples/s total across {world_size} rank(s)  "
+            f"-> {out_path}")
+
+
 # --------------------------------------------------------------------------- #
 # Training
 # --------------------------------------------------------------------------- #
-def train(cfg: dict) -> None:
+def train(cfg: dict, bench_out: str | None = None) -> None:
     rank, local_rank, world_size, is_distributed = _dist_info()
     device = _setup(is_distributed, local_rank)
     is_main = rank == 0
@@ -143,6 +193,14 @@ def train(cfg: dict) -> None:
     mask_frac = cfg.get("mask_frac", 0.4)
     epochs = cfg["mae_epochs"]
     n = len(flat)
+    # Benchmarking: skip a few warmup steps, then time the rest. Only active
+    # when a --bench-out path is given, so normal training is unchanged.
+    bench = bench_out is not None
+    bench_warmup = int(cfg.get("bench_warmup", 10))
+    local_batch = cfg.get("batch_size", 512)
+    step_ms: list[float] = []
+    global_step = 0
+
     net.train()
     for epoch in range(epochs):
         if sampler is not None:
@@ -150,6 +208,13 @@ def train(cfg: dict) -> None:
         _push(f"mae/epoch_{epoch}")
         total = 0.0
         for (xb,) in loader:
+            # Time this step only after warmup, bracketing with a CUDA sync so
+            # async kernels have actually finished before we read the clock.
+            timed = bench and global_step >= bench_warmup
+            if timed and is_cuda:
+                torch.cuda.synchronize(device)
+            t0 = time.perf_counter() if timed else 0.0
+
             xb = xb.to(device, non_blocking=pin)
             mask = (torch.rand_like(xb) > mask_frac).float()
             opt.zero_grad(set_to_none=True)
@@ -167,11 +232,22 @@ def train(cfg: dict) -> None:
             scaler.update()
             _pop()
             total += loss.item() * len(xb)
+
+            if timed:
+                if is_cuda:
+                    torch.cuda.synchronize(device)
+                step_ms.append((time.perf_counter() - t0) * 1000.0)
+            global_step += 1
         _pop()
         # Each rank sees ~n/world_size rows; this per-rank mean is a fine
         # progress signal (rank 0 only).
         denom = n / max(world_size, 1)
         log(f"  [MAE] epoch {epoch + 1}/{epochs} recon_mse={total / denom:.4f}")
+
+    # ---- Benchmark aggregation + JSON (rank 0) -----------------------------
+    if bench:
+        _write_bench(bench_out, step_ms, local_batch, world_size,
+                     is_distributed, device, is_main, log)
 
     # ---- Checkpoint + eval (rank 0 only) -----------------------------------
     if is_main:
@@ -205,6 +281,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-gnbs", type=int, default=None)
     ap.add_argument("--epochs", type=int, default=None,
                     help="Override mae_epochs (handy for short profiling runs).")
+    ap.add_argument("--bench-out", default=None,
+                    help="If set, measure step time/throughput and write a "
+                         "JSON here (rank 0). Training behavior is unchanged.")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -215,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.epochs is not None:
         cfg["mae_epochs"] = args.epochs
 
-    train(cfg)
+    train(cfg, bench_out=args.bench_out)
     return 0
 
 
