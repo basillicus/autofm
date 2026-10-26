@@ -9,7 +9,6 @@ venv/
 env.bak/
 
 # --- data & artifacts (per SYSTEM_DESIGN §8) ---
-data/
 artifacts/
 logs/
 
