@@ -14,6 +14,9 @@ latent_dim: 32
 compressor: "mae"
 mae_epochs: 50       # real training, not a 6-epoch smoke run
 clf_epochs: 50
+clf_head: "evidential"   # "softmax" (baseline) | "evidential" (adds uncertainty)
+clf_backbone: "patchtst" # "transformer" | "patchtst" (patch-based)
+patch_size: 5            # patch length for the patchtst backbone
 
 # GPU knobs (from Task 2):
 amp: true

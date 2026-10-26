@@ -25,6 +25,9 @@ num_workers: 8      # DataLoader workers for MAE training
 
 # ---- Classifier ----
 clf_epochs: 12
+clf_head: "softmax"       # "softmax" (baseline) | "evidential" (adds uncertainty)
+clf_backbone: "transformer"  # "transformer" | "patchtst" (patch-based)
+patch_size: 5             # patch length for the patchtst backbone
 
 # ---- Reproducibility ----
 seed: 42

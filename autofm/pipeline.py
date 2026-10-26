@@ -45,6 +45,9 @@ DEFAULT_CONFIG = {
     "amp": True,                  # mixed precision (CUDA only; ignored on CPU/MPS)
     "num_workers": 8,             # DataLoader workers for MAE training
     "clf_epochs": 12,
+    "clf_head": "softmax",        # "softmax" (baseline) | "evidential" (+uncertainty)
+    "clf_backbone": "transformer",# "transformer" | "patchtst"
+    "patch_size": 5,              # patch length for the patchtst backbone
     "seed": 42,
 }
 
@@ -92,16 +95,22 @@ def run(cfg: dict) -> dict:
     if cfg["compressor"] == "pca":
         print(f"      PCA explained variance: {comp.explained_variance:.3f}")
 
-    print(f"[5/5] Training temporal classifier ({cfg['clf_epochs']} epochs) ...")
+    head = cfg.get("clf_head", "softmax")
+    backbone = cfg.get("clf_backbone", "transformer")
+    print(f"[5/5] Training temporal classifier ({cfg['clf_epochs']} epochs, "
+          f"backbone={backbone}, head={head}) ...")
     clf = TemporalClassifier(
         latent_dim=cfg["latent_dim"], n_classes=len(CLASS_NAMES),
-        epochs=cfg["clf_epochs"], seed=cfg["seed"],
+        epochs=cfg["clf_epochs"], seed=cfg["seed"], head=head,
+        backbone=backbone, window_k=cfg["window_k"],
+        patch_size=cfg.get("patch_size", 5),
     )
     clf.fit(Ztr, prep.train.y_class, Zval, prep.val.y_class)
 
-    # Final test metrics.
+    # Final test metrics (+ uncertainty for the evidential head).
+    pred, unc = clf.predict_with_uncertainty(Zte)
     test_f1 = clf.macro_f1(Zte, prep.test.y_class)
-    pred = clf.predict(Zte)
+    mean_unc = float(unc.mean()) if len(unc) else float("nan")
     present = sorted(set(prep.test.y_class) | set(pred))
     report = classification_report(
         prep.test.y_class, pred,
@@ -110,15 +119,20 @@ def run(cfg: dict) -> dict:
     )
     elapsed = time.perf_counter() - t0
 
+    unc_label = ("mean uncertainty" if head == "evidential"
+                 else "mean confidence-gap")
     print("\n" + "=" * 64)
     print(f"autofm FM pipeline - TEST macro-F1 = {test_f1:.4f}  "
-          f"(compressor={cfg['compressor']}, horizon={cfg['horizon']})")
+          f"(compressor={cfg['compressor']}, backbone={backbone}, "
+          f"head={head}, horizon={cfg['horizon']})")
+    print(f"{unc_label}: {mean_unc:.4f}")
     print("=" * 64)
     print(report)
     print(f"Total wall time: {elapsed:.1f}s on device "
           f"{getattr(clf, 'device', 'cpu')}")
 
-    return {"test_macro_f1": test_f1, "elapsed_sec": elapsed}
+    return {"test_macro_f1": test_f1, "mean_uncertainty": mean_unc,
+            "elapsed_sec": elapsed}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -126,6 +140,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", default="config_autofm.yaml")
     ap.add_argument("--compressor", choices=["pca", "mae"], default=None,
                     help="Override the compressor from config.")
+    ap.add_argument("--head", choices=["softmax", "evidential"], default=None,
+                    help="Override the classifier head from config.")
+    ap.add_argument("--backbone", choices=["transformer", "patchtst"], default=None,
+                    help="Override the temporal backbone from config.")
     ap.add_argument("--max-days", type=int, default=None)
     ap.add_argument("--max-gnbs", type=int, default=None)
     args = ap.parse_args(argv)
@@ -133,6 +151,10 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     if args.compressor:
         cfg["compressor"] = args.compressor
+    if args.head:
+        cfg["clf_head"] = args.head
+    if args.backbone:
+        cfg["clf_backbone"] = args.backbone
     if args.max_days is not None:
         cfg["max_days"] = args.max_days
     if args.max_gnbs is not None:
