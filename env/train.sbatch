@@ -37,15 +37,26 @@ mkdir -p logs
 # Activate the shared team environment
 source <SHARED_ENV_PATH>/activate.sh
 
-# Sanity: confirm the GPU is visible
+# Sanity: confirm the GPU is visible AND that the torch CUDA build matches the
+# node driver. A mismatch (torch built for a newer CUDA than the driver
+# supports) is the usual cause of NCCL "CUDA driver version is insufficient"
+# crashes during DDP init - surfacing both numbers here makes it obvious.
 echo "-------- GPU visibility --------"
+echo "[driver] nvidia-smi reports (top-right = max CUDA the driver supports):"
+nvidia-smi | head -n 4 || echo "nvidia-smi unavailable (login node?)"
 python -c "
 import torch
-print('torch      ', torch.__version__)
-print('CUDA avail ', torch.cuda.is_available())
+print('torch        ', torch.__version__)
+print('torch CUDA   ', torch.version.cuda, '  <- torch was BUILT for this CUDA')
+print('CUDA avail   ', torch.cuda.is_available())
 if torch.cuda.is_available():
-    print('device     ', torch.cuda.get_device_name(0))
-    print('GPU memory ', round(torch.cuda.get_device_properties(0).total_mem / 1e9, 1), 'GB')
+    print('device       ', torch.cuda.get_device_name(0))
+    print('GPU memory   ', round(torch.cuda.get_device_properties(0).total_mem / 1e9, 1), 'GB')
+else:
+    print('WARNING: CUDA not available. If torch CUDA above is newer than the')
+    print('         driver CUDA from nvidia-smi, reinstall a matching build, e.g.:')
+    print('           pip install --force-reinstall torch \\\\')
+    print('             --index-url https://download.pytorch.org/whl/cu121')
 "
 echo "---------------------------"
 

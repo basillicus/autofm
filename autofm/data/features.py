@@ -62,11 +62,20 @@ def _clean_features(frame: pd.DataFrame, feature_cols: list[str]) -> tuple[pd.Da
 
 def _time_split_bounds(timestamps: np.ndarray,
                        train_frac: float, val_frac: float) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """Return the (train_end, val_end) timestamps for a chronological split."""
+    """Return the (train_end, val_end) timestamps for a chronological split.
+
+    Indices are clamped to ``[0, n-1]`` so that very small numbers of distinct
+    ROPs (e.g. smoke-scale runs) never underflow to ``-1`` and silently wrap to
+    the last timestamp, which would corrupt the split boundaries.
+    """
     ts_sorted = np.sort(np.unique(timestamps))
     n = len(ts_sorted)
-    train_end = ts_sorted[int(n * train_frac) - 1]
-    val_end = ts_sorted[int(n * (train_frac + val_frac)) - 1]
+    if n == 0:
+        raise ValueError("No timestamps to split on")
+    train_idx = min(max(int(n * train_frac) - 1, 0), n - 1)
+    val_idx = min(max(int(n * (train_frac + val_frac)) - 1, 0), n - 1)
+    train_end = ts_sorted[train_idx]
+    val_end = ts_sorted[val_idx]
     return train_end, val_end
 
 

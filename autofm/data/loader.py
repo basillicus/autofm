@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from autofm.profile_dataset import META_COLS, parse_fdn
+from autofm.fdn import META_COLS, parse_fdn, region_of
 
 TS = "rdiTimestampTZ"  # the real 15-min ROP timestamp column
 
@@ -71,27 +71,14 @@ def _me_of_cell(fdn: str) -> str | None:
     return parse_fdn(fdn).get("ManagedElement")
 
 
-def _host_of_infra(fdn: str) -> str | None:
-    c = parse_fdn(fdn)
-    return c.get("OCloudNode") or c.get("ManagedElement")
-
-
 def _region_of(fdn: str) -> str | None:
-    """Third SubNetwork level is the region, e.g. COR / DUB / RWE.
+    """Region for an fdn = its third SubNetwork level (see :mod:`autofm.fdn`).
 
-    ``SubNetwork=IE,SubNetwork=RAN,SubNetwork=COR,...`` -> ``COR``. Used to link
-    cells to the host pool serving their region, since host names
-    (``CORDU01``) do not match a cell's ManagedElement 1:1 - hosts are a
-    regional O-Cloud pool, not per-gNB. Region is the finest reliable join.
+    Thin wrapper kept for the loader's internal call sites and for the labeler,
+    which imports it. The region logic itself lives in :func:`autofm.fdn.region_of`
+    so the loader, labeler, and profiler all agree.
     """
-    subs = [v for k, v in _FDN_KV_ALL(fdn) if k == "SubNetwork"]
-    return subs[-1] if len(subs) >= 3 else (subs[-1] if subs else None)
-
-
-def _FDN_KV_ALL(fdn: str) -> list[tuple[str, str]]:
-    """All key=value pairs in order (SubNetwork repeats, so dict would lose them)."""
-    import re as _re
-    return _re.findall(r"(\w+)=([^,]+)", fdn or "")
+    return region_of(fdn)
 
 
 def _day_dirs(root: Path, level: str) -> list[Path]:
@@ -218,7 +205,8 @@ def load(
         keep = sorted(frame["gnb"].dropna().unique())[:max_gnbs]
         frame = frame[frame["gnb"].isin(keep)].copy()
 
-    # Attach platform (by gnb+ts) and infra (by host==me+ts).
+    # Attach platform (by gnb+ts) and infra (by region+ts - hosts are a
+    # regional O-Cloud pool, not per-gNB, so the region is the reliable join).
     if plat_frames:
         plat_all = pd.concat(plat_frames, ignore_index=True)
         frame = frame.merge(plat_all, on=["gnb", TS], how="left")
