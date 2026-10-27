@@ -1,0 +1,25 @@
+@startuml autofm-container
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+!include style.puml
+
+System_Boundary(SOURCES, "Data Sources") {
+    System_Ext(TELEMETRY, "Telemetry Export", "Per-ROP CSVs")
+    System_Ext(ALARMS, "Alarm Feed", "X.733 labels")
+}
+
+Person(USER, "Network Operator", "Acts on advisories")
+
+System_Boundary(AUTOFM, "autofm") {
+    Container(DATA, "data", "Python", "Loads multi-level telemetry and builds leakage-safe labeled windows")
+    Container(MODEL, "model", "PyTorch", "Learns, forecasts, and calibrates the fault prediction")
+    Container(ADVISORY, "advisory", "Python", "Correlates the prediction into a ranked operator advisory")
+}
+
+Rel_D(TELEMETRY, DATA, "INT.TELEMETRY.CSV", "streams counters")
+Rel_D(ALARMS, DATA, "INT.ALARMS.CSV", "provides labels")
+Rel_D(DATA, MODEL, "windowed tensors")
+Rel_D(MODEL, ADVISORY, "calibrated prediction")
+Rel_D(ADVISORY, USER, "delivers advisory")
+
+Lay_R(TELEMETRY, ALARMS)
+@enduml

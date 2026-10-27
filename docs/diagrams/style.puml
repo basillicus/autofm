@@ -1,0 +1,48 @@
+' ============================================================================
+' autofm - shared C4-PlantUML style
+' ----------------------------------------------------------------------------
+' Matches the NM IDP team C4 convention (common_parent.puml brand palette),
+' reproduced with the PUBLIC C4-PlantUML stdlib bundled with PlantUML so the
+' diagrams render fully offline and the committed SVGs are GitHub-portable
+' (no Ericsson-internal include server).
+'
+' Brand palette (from the team's common_parent.puml)
+'   system / component   #0082f0  (Ericsson blue)   border #78A8D8
+'   container            #ff8c0a  (Ericsson orange)  border #78A8D8
+'   external_system      #767676  (grey)
+'   person / user        #ffffff  bg, black text
+'   relationships        black line, black text
+' ============================================================================
+
+skinparam defaultFontName "EricssonHilda, Helvetica Neue, Helvetica, Arial, sans-serif"
+skinparam defaultFontSize 13
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam roundCorner 6
+skinparam nodesep 55
+skinparam ranksep 65
+skinparam linetype ortho
+
+' ---- Brand palette globals (mirrors common_parent.puml) ------------------
+!global $OSS_BG_COLOR = "#0082f0"
+!global $OSS_BORDER_COLOR = "#78A8D8"
+!global $EXTERNAL_BG_COLOR = "#767676"
+!global $EXTERNAL_BORDER_COLOR = "#767676"
+!global $USER_BG_COLOR = "#FFFFFF"
+!global $USER_FONT_COLOR = "#000000"
+!global $USER_BORDER_COLOR = "#B0B0B0"
+!global $OSS_CONT_BG_COLOR = "#ff8c0a"
+!global $OSS_CONT_BORDER_COLOR = "#78A8D8"
+
+UpdateElementStyle("system",          $bgColor=$OSS_BG_COLOR,      $fontColor="#FFFFFF", $borderColor=$OSS_BORDER_COLOR)
+UpdateElementStyle("component",       $bgColor=$OSS_BG_COLOR,      $fontColor="#FFFFFF", $borderColor=$OSS_BORDER_COLOR)
+UpdateElementStyle("external_system", $bgColor=$EXTERNAL_BG_COLOR, $fontColor="#FFFFFF", $borderColor=$EXTERNAL_BORDER_COLOR)
+UpdateElementStyle("container",       $bgColor=$OSS_CONT_BG_COLOR, $fontColor="#000000", $borderColor=$OSS_CONT_BORDER_COLOR)
+UpdateElementStyle("person",          $bgColor="#0B4F8A",         $fontColor="#FFFFFF", $borderColor="#083A66")
+UpdateBoundaryStyle($borderColor="#767676", $fontColor="#333333")
+
+' ---- Relationships: black line + black bold label (team convention) ------
+UpdateRelStyle($lineColor="#000000", $textColor="#000000")
+skinparam ArrowThickness 1.1
+skinparam ArrowFontColor #000000
+skinparam ArrowFontSize 12
