@@ -1,0 +1,70 @@
+name: Render C4 diagrams
+
+on:
+  push:
+    paths:
+      - "docs/diagrams/**.puml"
+  workflow_dispatch: {}            # allow manual runs from the Actions tab
+
+permissions:
+  contents: write                  # needed for the bot to commit rendered SVGs
+
+concurrency:
+  group: render-diagrams-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Graphviz (PlantUML layout engine)
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+
+      - name: Download PlantUML
+        run: |
+          curl -fsSL -o plantuml.jar \
+            https://github.com/plantuml/plantuml/releases/download/v1.2024.7/plantuml-1.2024.7.jar
+
+      - name: Render .puml -> .svg
+        working-directory: docs/diagrams
+        run: |
+          set -euo pipefail
+          shopt -s nullglob          # *.puml expands to nothing (not a literal) if none
+          sources=(*.puml)
+          if [ ${#sources[@]} -eq 0 ]; then
+            echo "No .puml sources found; nothing to render."; exit 0
+          fi
+  
+          java -Djava.awt.headless=true -jar ../../plantuml.jar -tsvg "${sources[@]}"
+         
+          for src in "${sources[@]}"; do
+            base="${src%.puml}"
+            id="$(sed -n 's/^@startuml[[:space:]]\{1,\}\([A-Za-z0-9_-]\{1,\}\).*/\1/p' "$src" | head -1)"
+            if [ -n "$id" ] && [ -f "${id}.svg" ] && [ "${id}.svg" != "${base}.svg" ]; then
+              mv -f "${id}.svg" "${base}.svg"
+            fi
+          done
+          ls -la ./*.svg || true
+
+      - name: Commit rendered SVGs
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/diagrams/*.svg
+          if git diff --cached --quiet; then
+            echo "No diagram changes to commit."
+          else
+            git commit -m "docs(diagrams): re-render C4 diagrams [skip ci]"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
