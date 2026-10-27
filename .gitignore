@@ -3,13 +3,17 @@
 .env.*
 !env/.env.example
 
+# --- local machine configs (never commit laptop paths / personal info) ---
+config_local.yaml
+config_*.local.yaml
+*.local.yaml
+
 # --- virtual environments ---
 .venv/
 venv/
 env.bak/
 
 # --- data & artifacts (per SYSTEM_DESIGN §8) ---
-data/
 artifacts/
 logs/
 
