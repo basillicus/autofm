@@ -1,0 +1,33 @@
+# autofm FM pipeline configuration.
+# All knobs for the end-to-end run live here. Widen the data knobs for a full
+# run on Leonardo; keep them small for a local CPU/MPS smoke test.
+
+# ---- Dataset ----
+# Neutral default (no machine-specific paths committed). Override per machine:
+#   local:    --config config_local.yaml   (gitignored; your laptop path)
+#   Leonardo: --config config_leonardo.yaml (cluster scratch path)
+dataset_root: "./data/autofm-dataset-ie"
+max_days: 14        # number of days to load (null-equivalent: raise toward 182)
+max_gnbs: 40        # cap on gNBs (raise toward ~100 for full scale)
+
+# ---- Labeling ----
+horizon: 5          # forecast horizon in ROPs (15-min steps); 5 = 75 min ahead
+
+# ---- Windowing ----
+window_k: 32        # lookback window length in ROPs
+
+# ---- Compression ----
+latent_dim: 32      # compressed per-ROP latent size
+compressor: "mae"   # "pca" (fast baseline) | "mae" (autofm design)
+mae_epochs: 6
+amp: true           # mixed precision - CUDA only (ignored on CPU/MPS)
+num_workers: 8      # DataLoader workers for MAE training
+
+# ---- Classifier ----
+clf_epochs: 12
+clf_head: "softmax"       # "softmax" (baseline) | "evidential" (adds uncertainty)
+clf_backbone: "transformer"  # "transformer" | "patchtst" (patch-based)
+patch_size: 5             # patch length for the patchtst backbone
+
+# ---- Reproducibility ----
+seed: 42

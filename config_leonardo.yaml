@@ -1,0 +1,26 @@
+# config_leonardo.yaml - full-scale run on Leonardo (A100).
+# Copied from config_autofm.yaml, scaled up for the full dataset.
+
+# Dataset lives in SCRATCH (where the 130 GB was unpacked):
+dataset_root: "/leonardo_scratch/large/usertrain/a08trc02/autofm-dataset-ie"
+
+max_days: 182        # full history (was 6 at smoke scale)
+max_gnbs: 100        # most of the network (was 12 at smoke scale)
+
+horizon: 5
+window_k: 32
+latent_dim: 32
+
+compressor: "mae"
+mae_epochs: 50       # real training, not a 6-epoch smoke run
+clf_epochs: 50
+clf_head: "evidential"   # "softmax" (baseline) | "evidential" (adds uncertainty)
+clf_backbone: "patchtst" # "transformer" | "patchtst" (patch-based)
+patch_size: 5            # patch length for the patchtst backbone
+
+# GPU knobs (from Task 2):
+amp: true
+num_workers: 8
+batch_size: 1024     # A100 64 GB has plenty of room; raise if memory allows
+
+seed: 42
