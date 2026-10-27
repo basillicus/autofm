@@ -228,11 +228,17 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
                                   shuffle=True, seed=cfg["seed"])
                if is_distributed else None)
     g = torch.Generator().manual_seed(cfg["seed"])
+    cpu_budget = int(os.environ.get("SLURM_CPUS_PER_TASK", "0")) or (os.cpu_count() or 1)
+    req_workers = int(cfg.get("num_workers", 0))
+    num_workers = max(0, min(req_workers, cpu_budget))
+    if num_workers < req_workers:
+        log(f"[data] capping num_workers {req_workers} -> {num_workers} "
+            f"(CPUs available: {cpu_budget})")
     loader = DataLoader(
         dataset, batch_size=cfg.get("batch_size", 512),
         shuffle=(sampler is None), sampler=sampler, generator=g,
-        num_workers=cfg.get("num_workers", 0), pin_memory=pin,
-        persistent_workers=(cfg.get("num_workers", 0) > 0),
+        num_workers=num_workers, pin_memory=pin,
+        persistent_workers=(num_workers > 0),
     )
 
     mask_frac = cfg.get("mask_frac", 0.4)
@@ -322,6 +328,9 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Train the autofm MAE (DDP-capable).")
     ap.add_argument("--config", default="config_autofm.yaml")
+    ap.add_argument("--dataset-root", default=None,
+                    help="Override dataset_root from config (useful on the "
+                         "cluster to avoid editing YAML).")
     ap.add_argument("--max-days", type=int, default=None)
     ap.add_argument("--max-gnbs", type=int, default=None)
     ap.add_argument("--epochs", type=int, default=None,
@@ -332,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
+    if args.dataset_root is not None:
+        cfg["dataset_root"] = args.dataset_root
     if args.max_days is not None:
         cfg["max_days"] = args.max_days
     if args.max_gnbs is not None:
