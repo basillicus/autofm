@@ -66,8 +66,53 @@ def _pick_device(local_rank: int) -> torch.device:
     return torch.device("cpu")
 
 
+def _preflight_cuda(is_distributed: bool) -> None:
+    """Fail fast with an actionable message on a CUDA runtime/driver mismatch.
+
+    DDP uses the NCCL backend, which raises an opaque multi-rank error
+    (``ncclUnhandledCudaError`` / "CUDA driver version is insufficient for CUDA
+    runtime version") when the installed torch CUDA *runtime* is newer than the
+    node's driver supports. That happens on Leonardo when ``pip install torch``
+    pulls the newest CUDA build (e.g. +cu126) onto a node whose driver only
+    supports an older CUDA. We surface the real cause here - before NCCL init
+    buries it across ranks - with the one-line fix.
+
+    No-op in single-process mode (laptop CPU/MPS path).
+    """
+    if not is_distributed:
+        return
+    built_for = torch.version.cuda
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "Distributed (torchrun) run requested but CUDA is not available. "
+            f"torch {torch.__version__} is built for CUDA {built_for}. On a GPU "
+            "node this usually means the torch build is newer than the driver "
+            "supports (compare `nvidia-smi` top-right CUDA version). Install a "
+            "matching build, e.g. cu121:\n"
+            "  pip install --force-reinstall torch "
+            "--index-url https://download.pytorch.org/whl/cu121"
+        )
+    try:
+        # Touch the CUDA context so a driver/runtime mismatch surfaces here as a
+        # readable error, rather than inside the NCCL collective during DDP init.
+        torch.zeros(1, device="cuda")
+        torch.cuda.synchronize()
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"CUDA initialization failed: {exc}\n"
+            f"torch {torch.__version__} is built for CUDA {built_for}; the node "
+            "driver may be older (check `nvidia-smi` top-right CUDA version). "
+            "Reinstall a torch build matching the driver, e.g. cu121:\n"
+            "  pip install --force-reinstall torch "
+            "--index-url https://download.pytorch.org/whl/cu121"
+        ) from exc
+
+
 def _setup(is_distributed: bool, local_rank: int) -> torch.device:
     """Init the process group (NCCL) for DDP; no-op in single-process mode."""
+    # Validate the CUDA context first so a runtime/driver mismatch yields a
+    # clear message instead of an opaque multi-rank NCCL stack trace.
+    _preflight_cuda(is_distributed)
     if is_distributed:
         torch.distributed.init_process_group(backend="nccl")
         torch.cuda.set_device(local_rank)

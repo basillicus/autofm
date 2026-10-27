@@ -15,12 +15,14 @@ Two steps:
    * ``ManagedNFService``-> all cells of the alarm's gNB (service name prefix).
    * ``OCloudNode``      -> all cells in the alarm's region (SubNetwork).
 
-2. **Forecast label.** A cell at ROP ``t`` is **positive** if any alarm is
-   active on it within the next ``horizon`` ROPs (``t`` exclusive ..
-   ``t + horizon`` inclusive). This makes the task genuine forecasting - the
-   model must see the precursor, not the alarm itself. We emit both a binary
-   ``will_fault`` label and a multi-class ``fault_class`` (grouped probable
-   cause; ``0`` = Normal).
+2. **Forecast label.** A cell at ROP ``t`` is **positive** if any in-scope
+   alarm **onsets** (``eventTime``) within the next ``horizon`` ROPs, i.e. its
+   start falls in ``(t, t + horizon]`` (``t`` exclusive). An alarm already
+   firing at or before ``t`` does **not** make the row positive - that would be
+   detecting a present fault, not forecasting a future one (label leakage).
+   This keeps the task genuine forecasting: the model must read the precursor,
+   not the alarm itself. We emit both a binary ``will_fault`` label and a
+   multi-class ``fault_class`` (grouped probable cause; ``0`` = Normal).
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ import numpy as np
 import pandas as pd
 
 from autofm.data.loader import _region_of
-from autofm.profile_dataset import parse_fdn
+from autofm.fdn import parse_fdn
 
 ROP = pd.Timedelta(minutes=15)
 
@@ -135,9 +137,12 @@ def label_frame(
 ) -> pd.DataFrame:
     """Add ``will_fault`` (0/1) and ``fault_class`` (int) to the telemetry frame.
 
-    A row (gnb, cell, t) is positive if an alarm in its scope is active anywhere
-    in ``(t, t + horizon*ROP]``. When several alarms qualify, the earliest one's
-    class wins (the imminent fault). Normal rows get class 0.
+    A row (gnb, cell, t) is positive if an in-scope alarm **onsets** in
+    ``(t, t + horizon*ROP]`` - its ``eventTime`` is strictly after ``t`` and no
+    later than ``t + horizon``. Alarms already active at or before ``t`` are
+    ignored (predicting the future, not detecting the present). When several
+    alarms qualify, the earliest-onsetting one's class wins (the imminent
+    fault). Normal rows get class 0.
 
     Args:
         frame:   cell-centric telemetry frame (must have gnb, cell, region, ts).
@@ -164,6 +169,13 @@ def label_frame(
     # Forecast window end per row (tz-naive, matching ``t``).
     win_end = (ts_naive + horizon_td).to_numpy()
 
+    # Diagnostics: alarms whose scope matches no telemetry row, and alarms that
+    # match rows but never overlap any forecast window. Both are silently
+    # dropped from the labels, so surfacing their counts catches scope/topology
+    # mismatches (e.g. an S1ULink gNB key that no cell shares).
+    n_no_scope_match = 0
+    n_no_window_overlap = 0
+
     for al in alarms:
         # Row matches the alarm's scope?
         if al.scope_type == "cell":
@@ -173,14 +185,19 @@ def label_frame(
         else:  # region
             mask = region_arr == al.region
         if not mask.any():
+            n_no_scope_match += 1
             continue
 
-        # Alarm overlaps the forecast window (t, t+horizon]:
-        #   alarm active in window  <=>  start <= win_end AND end > t
+        # Genuine FORECAST label: the alarm must *onset* strictly inside the
+        # window (t, t + horizon]. An alarm that was already firing at or before
+        # t is a concurrent/past event, not a future one, so it must NOT make
+        # the row positive - otherwise the task degrades from "predict the
+        # precursor" to "detect the alarm already present" (label leakage).
+        #   positive  <=>  t < start <= t + horizon
         start = np.datetime64(al.start.to_datetime64())
-        end = np.datetime64(al.end.to_datetime64())
-        overlap = mask & (start <= win_end) & (end > t)
+        overlap = mask & (start > t) & (start <= win_end)
         if not overlap.any():
+            n_no_window_overlap += 1
             continue
 
         will[overlap] = 1
@@ -188,6 +205,15 @@ def label_frame(
         closer = overlap & (start < best_start)
         best_start[closer] = start
         cls[closer] = al.class_id
+
+    total = len(alarms)
+    n_applied = total - n_no_scope_match - n_no_window_overlap
+    if n_no_scope_match or n_no_window_overlap:
+        print(
+            f"[labels] applied {n_applied}/{total} alarms "
+            f"({n_no_scope_match} matched no in-scope rows, "
+            f"{n_no_window_overlap} matched rows but no forecast window)"
+        )
 
     frame["will_fault"] = will
     frame["fault_class"] = cls
