@@ -66,8 +66,53 @@ def _pick_device(local_rank: int) -> torch.device:
     return torch.device("cpu")
 
 
+def _preflight_cuda(is_distributed: bool) -> None:
+    """Fail fast with an actionable message on a CUDA runtime/driver mismatch.
+
+    DDP uses the NCCL backend, which raises an opaque multi-rank error
+    (``ncclUnhandledCudaError`` / "CUDA driver version is insufficient for CUDA
+    runtime version") when the installed torch CUDA *runtime* is newer than the
+    node's driver supports. That happens on Leonardo when ``pip install torch``
+    pulls the newest CUDA build (e.g. +cu126) onto a node whose driver only
+    supports an older CUDA. We surface the real cause here - before NCCL init
+    buries it across ranks - with the one-line fix.
+
+    No-op in single-process mode (laptop CPU/MPS path).
+    """
+    if not is_distributed:
+        return
+    built_for = torch.version.cuda
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "Distributed (torchrun) run requested but CUDA is not available. "
+            f"torch {torch.__version__} is built for CUDA {built_for}. On a GPU "
+            "node this usually means the torch build is newer than the driver "
+            "supports (compare `nvidia-smi` top-right CUDA version). Install a "
+            "matching build, e.g. cu121:\n"
+            "  pip install --force-reinstall torch "
+            "--index-url https://download.pytorch.org/whl/cu121"
+        )
+    try:
+        # Touch the CUDA context so a driver/runtime mismatch surfaces here as a
+        # readable error, rather than inside the NCCL collective during DDP init.
+        torch.zeros(1, device="cuda")
+        torch.cuda.synchronize()
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"CUDA initialization failed: {exc}\n"
+            f"torch {torch.__version__} is built for CUDA {built_for}; the node "
+            "driver may be older (check `nvidia-smi` top-right CUDA version). "
+            "Reinstall a torch build matching the driver, e.g. cu121:\n"
+            "  pip install --force-reinstall torch "
+            "--index-url https://download.pytorch.org/whl/cu121"
+        ) from exc
+
+
 def _setup(is_distributed: bool, local_rank: int) -> torch.device:
     """Init the process group (NCCL) for DDP; no-op in single-process mode."""
+    # Validate the CUDA context first so a runtime/driver mismatch yields a
+    # clear message instead of an opaque multi-rank NCCL stack trace.
+    _preflight_cuda(is_distributed)
     if is_distributed:
         torch.distributed.init_process_group(backend="nccl")
         torch.cuda.set_device(local_rank)
@@ -183,11 +228,17 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
                                   shuffle=True, seed=cfg["seed"])
                if is_distributed else None)
     g = torch.Generator().manual_seed(cfg["seed"])
+    cpu_budget = int(os.environ.get("SLURM_CPUS_PER_TASK", "0")) or (os.cpu_count() or 1)
+    req_workers = int(cfg.get("num_workers", 0))
+    num_workers = max(0, min(req_workers, cpu_budget))
+    if num_workers < req_workers:
+        log(f"[data] capping num_workers {req_workers} -> {num_workers} "
+            f"(CPUs available: {cpu_budget})")
     loader = DataLoader(
         dataset, batch_size=cfg.get("batch_size", 512),
         shuffle=(sampler is None), sampler=sampler, generator=g,
-        num_workers=cfg.get("num_workers", 0), pin_memory=pin,
-        persistent_workers=(cfg.get("num_workers", 0) > 0),
+        num_workers=num_workers, pin_memory=pin,
+        persistent_workers=(num_workers > 0),
     )
 
     mask_frac = cfg.get("mask_frac", 0.4)
@@ -277,6 +328,9 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Train the autofm MAE (DDP-capable).")
     ap.add_argument("--config", default="config_autofm.yaml")
+    ap.add_argument("--dataset-root", default=None,
+                    help="Override dataset_root from config (useful on the "
+                         "cluster to avoid editing YAML).")
     ap.add_argument("--max-days", type=int, default=None)
     ap.add_argument("--max-gnbs", type=int, default=None)
     ap.add_argument("--epochs", type=int, default=None,
@@ -287,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
+    if args.dataset_root is not None:
+        cfg["dataset_root"] = args.dataset_root
     if args.max_days is not None:
         cfg["max_days"] = args.max_days
     if args.max_gnbs is not None:

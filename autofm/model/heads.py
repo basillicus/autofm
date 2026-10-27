@@ -17,7 +17,6 @@ Both are plain ``nn.Module`` and run on CPU / MPS / CUDA.
 
 from __future__ import annotations
 
-import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F

@@ -18,25 +18,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
 
-# Columns every telemetry CSV carries (trailing metadata block, ;-delimited).
-META_COLS = ["fdn", "mecontext", "cell", "rdiTimestamp", "rdiTimestampTZ", "ropCount"]
-LEVELS = ["infra", "platform", "pm", "cm"]
-
-# Parse managed-object identifiers out of an fdn string, e.g.
-# "SubNetwork=IE,SubNetwork=RAN,SubNetwork=DUB,ManagedElement=DUBDU01,OCloudNode=DUBDU01"
-_FDN_KV = re.compile(r"(\w+)=([^,]+)")
-
-
-def parse_fdn(fdn: str) -> dict[str, str]:
-    """Return the key=value components of an fdn as a dict (last wins)."""
-    return {k: v for k, v in _FDN_KV.findall(fdn or "")}
+# Single source of truth for fdn parsing + metadata columns (see autofm/fdn.py).
+from autofm.fdn import LEVELS, META_COLS, parse_fdn
 
 
 @dataclass
