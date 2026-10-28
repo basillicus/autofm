@@ -189,17 +189,42 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
     torch.backends.cudnn.allow_tf32 = True
     torch.manual_seed(cfg["seed"])
 
-    # ---- Data (every rank loads the same smoke/full slice) -----------------
-    log(f"[data] loading telemetry (max_days={cfg['max_days']}, "
-        f"max_gnbs={cfg['max_gnbs']}) ...")
-    d = load(cfg["dataset_root"], max_days=cfg["max_days"], max_gnbs=cfg["max_gnbs"])
-    labeled = label_frame(
-        d.frame,
-        load_alarms(str(Path(cfg["dataset_root"]) / "alarms" / "alarms.csv")),
-        horizon=cfg["horizon"],
-    )
-    prep = prepare(labeled, d.feature_cols, k=cfg["window_k"])
-    flat = _flatten_time(prep.train.X).astype(np.float32)
+    # ---- Data --------------------------------------------------------------
+    # Default: every rank loads the same slice. With data_cache set (and DDP),
+    # rank 0 prepares once and the other ranks memory-map its train rows, so a
+    # node holds one copy of the data instead of one per GPU.
+    cache = None
+    if is_distributed and cfg.get("data_cache"):
+        tag = f"{os.environ.get('SLURM_JOB_ID', 'local')}-{os.environ.get('MASTER_PORT', '0')}"
+        cache = Path(cfg["data_cache"]) / f"mae-train-{tag}.npy"
+
+    prep = None
+    if cache is None or is_main:
+        log(f"[data] loading telemetry (max_days={cfg['max_days']}, "
+            f"max_gnbs={cfg['max_gnbs']}) ...")
+        d = load(cfg["dataset_root"], max_days=cfg["max_days"], max_gnbs=cfg["max_gnbs"])
+        labeled = label_frame(
+            d.frame,
+            load_alarms(str(Path(cfg["dataset_root"]) / "alarms" / "alarms.csv")),
+            horizon=cfg["horizon"],
+        )
+        prep = prepare(labeled, d.feature_cols, k=cfg["window_k"])
+        del d, labeled
+        flat = _flatten_time(prep.train.X).astype(np.float32, copy=False)
+    if cache is not None:
+        if is_main:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_name(cache.name + ".tmp")
+            with open(tmp, "wb") as fh:
+                np.save(fh, flat)
+            os.replace(tmp, cache)
+            prep.train.X = None
+            log(f"[data] shared train rows via {cache}")
+        else:
+            # Poll instead of a collective: preparing can outlast NCCL timeouts.
+            while not cache.exists():
+                time.sleep(5)
+        flat = np.load(cache, mmap_mode="c")
     log(f"[data] train rows {len(flat)}, feature dim {flat.shape[1]}")
 
     # ---- Model + DDP -------------------------------------------------------
@@ -315,14 +340,21 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
 
         # Quick reconstruction MSE on the val split as a sanity eval.
         core.eval()
+        # Batched, so a large val split doesn't have to fit on the GPU at once.
+        vflat_all = _flatten_time(prep.val.X).astype(np.float32, copy=False)
+        sq, count = 0.0, 0
         with torch.no_grad():
-            vflat = torch.from_numpy(
-                _flatten_time(prep.val.X).astype(np.float32)).to(device)
-            vrecon = core(vflat)
-            vmse = float(nn.functional.mse_loss(vrecon, vflat).item())
+            for i in range(0, len(vflat_all), 262_144):
+                vflat = torch.from_numpy(vflat_all[i:i + 262_144]).to(device)
+                vrecon = core(vflat)
+                sq += float(nn.functional.mse_loss(vrecon, vflat, reduction="sum"))
+                count += vflat.numel()
+        vmse = sq / max(count, 1)
         log(f"[eval] val recon_mse={vmse:.4f}")
 
     _cleanup(is_distributed)
+    if cache is not None and is_main:
+        cache.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -338,6 +370,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bench-out", default=None,
                     help="If set, measure step time/throughput and write a "
                          "JSON here (rank 0). Training behavior is unchanged.")
+    ap.add_argument("--data-cache", default=None,
+                    help="DDP only: rank 0 prepares the data once and writes the "
+                         "train rows to a file in this directory; the other ranks "
+                         "memory-map it (one copy per node instead of one per GPU).")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -349,6 +385,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg["max_gnbs"] = args.max_gnbs
     if args.epochs is not None:
         cfg["mae_epochs"] = args.epochs
+    if args.data_cache is not None:
+        cfg["data_cache"] = args.data_cache
 
     train(cfg, bench_out=args.bench_out)
     return 0
