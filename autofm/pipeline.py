@@ -20,11 +20,13 @@ Run:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import time
 from pathlib import Path
 
 import numpy as np
+import torch
 import yaml
 from sklearn.metrics import classification_report
 
@@ -69,6 +71,24 @@ def load_config(path: str | None) -> dict:
         with open(path) as fh:
             cfg.update(yaml.safe_load(fh) or {})
     return cfg
+
+
+@contextlib.contextmanager
+def nvtx_stage(name: str):
+    """Push/pop an NVTX range for a pipeline stage, CUDA-only.
+
+    Makes each stage show up as a named span on the Nsight Systems timeline
+    (outer ranges around the MAE's existing inner mae/* ranges). A pure no-op
+    when CUDA is absent, so laptop CPU/MPS runs are unchanged.
+    """
+    on = torch.cuda.is_available()
+    if on:
+        torch.cuda.nvtx.range_push(name)
+    try:
+        yield
+    finally:
+        if on:
+            torch.cuda.nvtx.range_pop()
 
 
 def _build_advisory(cfg, proba, pred, unc, cells, gat) -> dict | None:
@@ -151,13 +171,15 @@ def run(cfg: dict) -> dict:
 
     print(f"[1/5] Loading telemetry (max_days={cfg['max_days']}, "
           f"max_gnbs={cfg['max_gnbs']}) ...")
-    d = load(root, max_days=cfg["max_days"], max_gnbs=cfg["max_gnbs"])
+    with nvtx_stage("stage/1_load"):
+        d = load(root, max_days=cfg["max_days"], max_gnbs=cfg["max_gnbs"])
     print(f"      {len(d.frame)} rows, {len(d.feature_cols)} raw features, "
           f"{d.frame['cell'].nunique()} cells, {len(d.timestamps)} ROPs")
 
     print(f"[2/5] Labeling from alarms (horizon={cfg['horizon']} ROPs) ...")
-    alarms = load_alarms(str(Path(root) / "alarms" / "alarms.csv"))
-    labeled = label_frame(d.frame, alarms, horizon=cfg["horizon"])
+    with nvtx_stage("stage/2_label"):
+        alarms = load_alarms(str(Path(root) / "alarms" / "alarms.csv"))
+        labeled = label_frame(d.frame, alarms, horizon=cfg["horizon"])
     print(f"      positive rate {labeled['will_fault'].mean():.3f}")
 
     # Authoritative cell -> gNB topology map from the loader's fdn parse. Used
@@ -167,7 +189,8 @@ def run(cfg: dict) -> dict:
         .drop_duplicates("cell").set_index("cell")["gnb"].to_dict())
 
     print(f"[3/5] Windowing (k={cfg['window_k']}) + leakage-safe split ...")
-    prep = prepare(labeled, d.feature_cols, k=cfg["window_k"])
+    with nvtx_stage("stage/3_features"):
+        prep = prepare(labeled, d.feature_cols, k=cfg["window_k"])
     print(f"      train {prep.train.X.shape}  val {prep.val.X.shape}  "
           f"test {prep.test.X.shape}  ({len(prep.feature_cols)} features)")
 
@@ -179,10 +202,11 @@ def run(cfg: dict) -> dict:
         comp_kw["amp"] = cfg.get("amp", True)
         comp_kw["num_workers"] = cfg.get("num_workers", 0)
     comp = build_compressor(cfg["compressor"], latent_dim=cfg["latent_dim"], **comp_kw)
-    comp.fit(prep.train.X)
-    Ztr = comp.transform(prep.train.X)
-    Zval = comp.transform(prep.val.X)
-    Zte = comp.transform(prep.test.X)
+    with nvtx_stage("stage/4_compress"):
+        comp.fit(prep.train.X)
+        Ztr = comp.transform(prep.train.X)
+        Zval = comp.transform(prep.val.X)
+        Zte = comp.transform(prep.test.X)
     if cfg["compressor"] == "pca":
         print(f"      PCA explained variance: {comp.explained_variance:.3f}")
 
@@ -196,9 +220,10 @@ def run(cfg: dict) -> dict:
         print(f"[gat] topology fusion active "
               f"({'PyG' if gat.gat.use_pyg else 'dense-fallback'}) - "
               f"enriching latents with within-gNB neighbour context")
-        Ztr = gat.fit_transform(Ztr, prep.train.cells)
-        Zval = gat.transform(Zval, prep.val.cells)
-        Zte = gat.transform(Zte, prep.test.cells)
+        with nvtx_stage("stage/5_gat"):
+            Ztr = gat.fit_transform(Ztr, prep.train.cells)
+            Zval = gat.transform(Zval, prep.val.cells)
+            Zte = gat.transform(Zte, prep.test.cells)
 
     head = cfg.get("clf_head", "softmax")
     backbone = cfg.get("clf_backbone", "transformer")
@@ -210,7 +235,8 @@ def run(cfg: dict) -> dict:
         backbone=backbone, window_k=cfg["window_k"],
         patch_size=cfg.get("patch_size", 5),
     )
-    clf.fit(Ztr, prep.train.y_class, Zval, prep.val.y_class)
+    with nvtx_stage("stage/6_classify"):
+        clf.fit(Ztr, prep.train.y_class, Zval, prep.val.y_class)
 
     # Final test metrics. One forward pass: get probabilities, derive the class
     # prediction and uncertainty from them, so pred / proba / metrics are all
@@ -242,20 +268,21 @@ def run(cfg: dict) -> dict:
     conformal_coverage = None
     conformal_set_size = None
     if cfg.get("use_conformal", False):
-        proba_val = clf.predict_proba(Zval)
-        if len(proba_val) and len(proba):
-            cp = ConformalPredictor(confidence_level=0.95)
-            cp.calibrate(proba_val, prep.val.y_class)
-            sets = cp.predict_set(proba)
-            conformal_coverage = cp.empirical_coverage(sets, prep.test.y_class)
-            conformal_set_size = cp.mean_set_size(sets)
-            metrics["conformal"] = {
-                "target_coverage": 0.95,
-                "empirical_coverage": conformal_coverage,
-                "mean_set_size": conformal_set_size,
-            }
-        else:
-            print("[conformal] skipped - empty validation or test split")
+        with nvtx_stage("stage/7_conformal"):
+            proba_val = clf.predict_proba(Zval)
+            if len(proba_val) and len(proba):
+                cp = ConformalPredictor(confidence_level=0.95)
+                cp.calibrate(proba_val, prep.val.y_class)
+                sets = cp.predict_set(proba)
+                conformal_coverage = cp.empirical_coverage(sets, prep.test.y_class)
+                conformal_set_size = cp.mean_set_size(sets)
+                metrics["conformal"] = {
+                    "target_coverage": 0.95,
+                    "empirical_coverage": conformal_coverage,
+                    "mean_set_size": conformal_set_size,
+                }
+            else:
+                print("[conformal] skipped - empty validation or test split")
     present = sorted(set(prep.test.y_class) | set(pred))
     report = classification_report(
         prep.test.y_class, pred,
@@ -292,8 +319,9 @@ def run(cfg: dict) -> dict:
     # Optional advisory built from the model's REAL prediction (not hardcoded).
     advisory_fields = None
     if cfg.get("advisory", False):
-        advisory_fields = _build_advisory(
-            cfg, proba, pred, unc, prep.test.cells, gat)
+        with nvtx_stage("stage/8_advisory"):
+            advisory_fields = _build_advisory(
+                cfg, proba, pred, unc, prep.test.cells, gat)
 
     # Optional machine-readable metrics dump for tracking across runs.
     metrics_out = cfg.get("metrics_out")
