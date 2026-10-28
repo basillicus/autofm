@@ -28,7 +28,7 @@ the CI bot:
 
 The diagrams use the **public** C4-PlantUML includes
 (`!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/...`),
-which the CI runner resolves over the network - no Ericsson-internal server.
+which the CI runner resolves over the network - no private include server.
 
 ## Rendering locally (optional)
 
@@ -40,6 +40,6 @@ java -jar plantuml.jar -tsvg docs/diagrams/*.puml
 
 ## Style
 
-[`style.puml`](style.puml) is the shared theme included by every diagram, tuned
-to the NM IDP C4 brand palette: Ericsson blue systems, orange containers, grey
-external systems, flat (no shadow), orthogonal routing.
+[`style.puml`](style.puml) is the shared theme included by every diagram: blue
+systems, orange containers, grey external systems, flat (no shadow), orthogonal
+routing.
