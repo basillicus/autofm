@@ -2,23 +2,37 @@
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
 !include style.puml
 
-System(FM, "FM Prediction", "Fault type, uncertainty, localization, TTF, causal chain")
+' ============================================================================
+' Level 3 - Component (Advisory layer), production architecture.
+' The Analysis Bus is central correlation infrastructure: the three pillars
+' publish to it, the Correlation Engine consumes from it (not a dead-end).
+' ============================================================================
+
+System(FM, "FM Prediction", "Calibrated fault type, uncertainty, localization, TTF, causal chain")
 
 Container_Boundary(ADV, "autofm - advisory layer") {
-    Component(BUS, "Analysis Bus", "autofm.advisory.bus", "Shared queue; pillars publish and read typed messages")
-    Component(PM, "PM Pillar", "autofm.advisory.pm", "Maps the fault to SLA breach risk and horizon")
-    Component(CM, "CM Pillar", "autofm.advisory.cm", "Ranks candidate remediation actions")
-    Component(CORR, "Correlation Engine", "autofm.advisory.correlation", "Fuses FM + PM + CM into one ranked advisory")
+    Component(FMPUB, "FM Publisher", "autofm.advisory", "Publishes the fault prediction onto the bus")
+    Component(PM, "PM Pillar", "autofm.advisory.pm", "Estimates SLA breach risk and horizon")
+    Component(CM, "CM Pillar", "autofm.advisory.cm", "Proposes ranked remediation actions")
+    ComponentQueue(BUS, "Analysis Bus", "in-process · broker-ready", "Typed FM/PM/CM messages")
+    Component(CORR, "Correlation Engine", "autofm.advisory.correlation", "Fuses FM+PM+CM into one ranked advisory")
 }
 
-Person(USER, "Network Operator", "Acts on advisories")
+Person(OPERATOR, "Network Operator", "Acts on advisories")
+System_Ext(AUTOMATION, "Automation System", "Closed-loop remediation")
 
-Rel_D(FM, BUS, "publishes prediction")
-Rel_D(BUS, PM, "fault prediction")
-Rel_D(BUS, CM, "fault prediction")
-Rel_D(PM, CORR, "SLA risk")
-Rel_D(CM, CORR, "candidate actions")
-Rel_D(CORR, USER, "delivers ranked advisory")
+' producers publish onto the bus
+Rel_D(FM, FMPUB, "fault prediction")
+Rel_D(FMPUB, BUS, "publishes FM", "message")
+Rel_D(PM, BUS, "publishes SLA risk", "message")
+Rel_D(CM, BUS, "publishes actions", "message")
 
+' correlator consumes the bus, emits the advisory
+Rel_D(BUS, CORR, "consumes FM/PM/CM", "message")
+Rel_D(CORR, OPERATOR, "delivers ranked advisory")
+Rel_D(CORR, AUTOMATION, "advisory for closed-loop", "API")
+
+Lay_R(FMPUB, PM)
 Lay_R(PM, CM)
+Lay_R(OPERATOR, AUTOMATION)
 @enduml
