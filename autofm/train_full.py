@@ -216,25 +216,27 @@ def _train_clf_ddp(cfg, Ztr, ytr, device, ctx, log) -> _TemporalEncoder:
 # --------------------------------------------------------------------------- #
 # Rank-0 once-only tail: compress transforms, GAT, eval, conformal, advisory
 # --------------------------------------------------------------------------- #
-def _finish_rank0(cfg, prep, comp, clf_core, t0, log) -> dict:
+def _finish_rank0(cfg, prep, comp, clf_core, t0, log, gat=None) -> dict:
     """Run the deterministic tail on rank 0 and print/return results.
 
     ``comp`` is the already-fitted compressor (MAE wrapper or PCA); ``clf_core``
-    is the DDP-trained classifier encoder.
+    is the DDP-trained classifier encoder. ``gat`` is the SAME (seed-fixed)
+    GATFusion instance used to enrich the train split during training, reused
+    here so eval sees an identical transform (no second random init).
     """
     # Compress all splits with the already-trained compressor.
     Ztr = comp.transform(prep.train.X)
     Zval = comp.transform(prep.val.X)
     Zte = comp.transform(prep.test.X)
 
-    # Optional GAT fusion (replicated; lightweight) - same contract as pipeline.
-    gat = None
-    if cfg.get("use_gat", False):
-        gat = GATFusion(latent_dim=cfg["latent_dim"], seed=cfg["seed"])
+    # Optional GAT fusion - reuse the SAME instance that enriched the train
+    # split during training (seed-fixed, untrained weights), so train and eval
+    # share one transform. Grouping uses the real cell -> gNB topology map.
+    if gat is not None:
         log(f"[gat] topology fusion active "
             f"({'PyG' if gat.gat.use_pyg else 'dense-fallback'}) - "
             f"enriching latents with within-gNB neighbour context")
-        Ztr = gat.fit_transform(Ztr, prep.train.cells)
+        Ztr = gat.transform(Ztr, prep.train.cells)
         Zval = gat.transform(Zval, prep.val.cells)
         Zte = gat.transform(Zte, prep.test.cells)
 
@@ -372,6 +374,10 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
         load_alarms(str(Path(cfg["dataset_root"]) / "alarms" / "alarms.csv")),
         horizon=cfg["horizon"])
     prep = prepare(labeled, d.feature_cols, k=cfg["window_k"])
+    # Authoritative cell -> gNB topology map (loader fdn parse) for the GAT.
+    cell_to_gnb = (
+        d.frame[["cell", "gnb"]].dropna().astype(str)
+        .drop_duplicates("cell").set_index("cell")["gnb"].to_dict())
     log(f"[data] train {prep.train.X.shape}  val {prep.val.X.shape}  "
         f"test {prep.test.X.shape}")
 
@@ -394,11 +400,14 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
     # Compress the TRAIN split (replicated) to feed the classifier.
     Ztr = comp.transform(prep.train.X)
 
-    # Optional GAT enrich of the train latents before classifier training, so
-    # the classifier sees the same representation it will at eval (replicated).
+    # Optional GAT enrich of the train latents before classifier training.
+    # ONE seed-fixed instance, reused for eval in _finish_rank0 (identical
+    # weights across train and eval).
+    gat = None
     if cfg.get("use_gat", False):
-        gat_tr = GATFusion(latent_dim=cfg["latent_dim"], seed=cfg["seed"])
-        Ztr = gat_tr.fit_transform(Ztr, prep.train.cells)
+        gat = GATFusion(latent_dim=cfg["latent_dim"], seed=cfg["seed"],
+                        cell_to_gnb=cell_to_gnb)
+        Ztr = gat.fit_transform(Ztr, prep.train.cells)
 
     # Stage 2: DDP-train the temporal classifier.
     log(f"[2/2] Classifier ({cfg['clf_epochs']} epochs, DDP x{world_size}) ...")
@@ -410,7 +419,7 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
 
     result = None
     if is_main:
-        result = _finish_rank0(cfg, prep, comp, clf_core, t0, log)
+        result = _finish_rank0(cfg, prep, comp, clf_core, t0, log, gat=gat)
         log(f"Total wall time: {time.perf_counter() - t0:.1f}s on {device}")
 
     _cleanup(is_distributed)
