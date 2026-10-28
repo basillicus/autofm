@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from numpy.lib.stride_tricks import sliding_window_view
 
 TS = "rdiTimestampTZ"
 
@@ -54,8 +55,9 @@ def _clean_features(frame: pd.DataFrame, feature_cols: list[str]) -> tuple[pd.Da
     # Drop columns that are entirely null across the loaded data.
     keep = [c for c in feature_cols if f[c].notna().any()]
     # Per-cell forward then backward fill (dense 15-min telemetry), then 0.
-    f[keep] = (f.groupby("cell")[keep]
-               .transform(lambda s: s.ffill().bfill()))
+    # (vectorised groupby fills; same result as a per-column ffill().bfill())
+    f[keep] = f.groupby("cell")[keep].ffill()
+    f[keep] = f.groupby("cell")[keep].bfill()
     f[keep] = f[keep].fillna(0.0)
     return f, keep
 
@@ -90,31 +92,33 @@ def _make_windows(
     f: pd.DataFrame, feature_cols: list[str], k: int,
     mean: np.ndarray, std: np.ndarray,
 ) -> Dataset:
-    """Build (N, k, F) windows per cell from a time-sorted frame slice."""
+    """Build (N, k, F) windows per cell from a time-sorted frame slice.
+
+    Windows are strided views over each cell's scaled rows, so the only copy is
+    the final concatenation (one float32 array of N*k*F values).
+    """
     Xs, yb, yc, cs = [], [], [], []
     feat_idx = feature_cols
     for cell, g in f.groupby("cell", sort=False):
         g = g.sort_values(TS)
         vals = ((g[feat_idx].to_numpy(dtype=np.float32) - mean) / std)
-        wf = g["will_fault"].to_numpy(dtype=np.int8)
-        fc = g["fault_class"].to_numpy(dtype=np.int64)
         n = len(g)
         if n < k:
             continue
-        for end in range(k, n + 1):          # window = [end-k, end)
-            Xs.append(vals[end - k:end])
-            yb.append(wf[end - 1])           # label at the window's last step
-            yc.append(fc[end - 1])
-            cs.append(cell)
+        # window = rows [end-k, end) for end in k..n; label at its last step
+        Xs.append(sliding_window_view(vals, k, axis=0).transpose(0, 2, 1))
+        yb.append(g["will_fault"].to_numpy(dtype=np.int8)[k - 1:])
+        yc.append(g["fault_class"].to_numpy(dtype=np.int64)[k - 1:])
+        cs.append(np.full(n - k + 1, cell, dtype=object))
     if not Xs:
         empty = np.empty((0, k, len(feat_idx)), dtype=np.float32)
         return Dataset(empty, np.empty(0, np.int8), np.empty(0, np.int64),
                        np.empty(0, object))
     return Dataset(
-        X=np.stack(Xs).astype(np.float32),
-        y_binary=np.asarray(yb, dtype=np.int8),
-        y_class=np.asarray(yc, dtype=np.int64),
-        cells=np.asarray(cs, dtype=object),
+        X=np.concatenate(Xs).astype(np.float32, copy=False),
+        y_binary=np.concatenate(yb),
+        y_class=np.concatenate(yc),
+        cells=np.concatenate(cs),
     )
 
 

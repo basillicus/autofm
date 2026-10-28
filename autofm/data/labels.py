@@ -161,10 +161,15 @@ def label_frame(
 
     horizon_td = horizon * ROP
 
-    # Pre-index rows by scope key for cheap matching.
-    gnb_arr = frame["gnb"].to_numpy()
-    cell_arr = frame["cell"].to_numpy()
-    region_arr = frame["region"].to_numpy()
+    # Pre-index rows by scope key for cheap matching: integer codes compare far
+    # faster than the object (string) arrays, once per alarm over every row.
+    # A key absent from the frame gets code -2, which matches no row (NaN -> -1).
+    gnb_arr, gnb_keys = pd.factorize(frame["gnb"])
+    cell_arr, cell_keys = pd.factorize(frame["cell"])
+    region_arr, region_keys = pd.factorize(frame["region"])
+    gnb_code = {k: i for i, k in enumerate(gnb_keys)}
+    cell_code = {k: i for i, k in enumerate(cell_keys)}
+    region_code = {k: i for i, k in enumerate(region_keys)}
 
     # Forecast window end per row (tz-naive, matching ``t``).
     win_end = (ts_naive + horizon_td).to_numpy()
@@ -179,11 +184,12 @@ def label_frame(
     for al in alarms:
         # Row matches the alarm's scope?
         if al.scope_type == "cell":
-            mask = (gnb_arr == al.gnb) & (cell_arr == al.cell)
+            mask = ((gnb_arr == gnb_code.get(al.gnb, -2))
+                    & (cell_arr == cell_code.get(al.cell, -2)))
         elif al.scope_type == "gnb":
-            mask = gnb_arr == al.gnb
+            mask = gnb_arr == gnb_code.get(al.gnb, -2)
         else:  # region
-            mask = region_arr == al.region
+            mask = region_arr == region_code.get(al.region, -2)
         if not mask.any():
             n_no_scope_match += 1
             continue
