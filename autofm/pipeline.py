@@ -33,7 +33,13 @@ from autofm.data.labels import CLASS_NAMES, label_frame, load_alarms
 from autofm.data.loader import load
 from autofm.metrics import compute_all, format_summary, write_prometheus
 from autofm.model.classifier import TemporalClassifier
+from autofm.advisory.bus import AnalysisBus, Message
+from autofm.advisory.cm_stub import CMStub
+from autofm.advisory.correlation import CorrelationEngine
+from autofm.advisory.pm_stub import PMStub
 from autofm.model.compress import build_compressor
+from autofm.model.conformal import ConformalPredictor
+from autofm.model.gat_fusion import GATFusion, gnb_of_cell
 
 DEFAULT_CONFIG = {
     "dataset_root": "./data/autofm-dataset-ie",
@@ -50,6 +56,9 @@ DEFAULT_CONFIG = {
     "clf_head": "softmax",        # "softmax" (baseline) | "evidential" (+uncertainty)
     "clf_backbone": "transformer",# "transformer" | "patchtst"
     "patch_size": 5,              # patch length for the patchtst backbone
+    "use_gat": False,             # insert GAT topology fusion between compress + classify
+    "use_conformal": False,       # calibrate 95% conformal coverage sets on the val slice
+    "advisory": False,            # build an FM/PM/CM advisory from the model's real prediction
     "seed": 42,
 }
 
@@ -60,6 +69,75 @@ def load_config(path: str | None) -> dict:
         with open(path) as fh:
             cfg.update(yaml.safe_load(fh) or {})
     return cfg
+
+
+def _build_advisory(cfg, proba, pred, unc, cells, gat) -> dict | None:
+    """Build + print an FM/PM/CM advisory from the model's real prediction.
+
+    Picks one representative example: the highest-probability NON-Normal
+    prediction across the test set. Returns the rendered advisory fields (for
+    the metrics JSON), or ``None`` if nothing non-Normal was predicted.
+    """
+    # Class 0 is Normal; faults are classes 1..K-1.
+    if len(proba) == 0 or proba.shape[1] <= 1:
+        print("[advisory] no fault predicted in test window; skipping advisory")
+        return None
+    fault_rows = np.where(pred != 0)[0]
+    if len(fault_rows) == 0:
+        print("[advisory] no fault predicted in test window; skipping advisory")
+        return None
+
+    # Among predicted faults, pick the one the model is most confident about:
+    # the max probability mass on its (non-Normal) predicted class.
+    conf_of_pred = proba[fault_rows, pred[fault_rows]]
+    ex = int(fault_rows[int(np.argmax(conf_of_pred))])
+
+    cell = str(cells[ex])
+    gnb = gnb_of_cell(cell)
+    fault_class = CLASS_NAMES[int(pred[ex])]
+    # confidence = 1 - uncertainty for this example, clipped to [0, 1].
+    conf = 1.0 - float(unc[ex]) if ex < len(unc) else float(proba[ex, pred[ex]])
+    conf = float(np.clip(conf, 0.0, 1.0))
+
+    # Origin / causal chain: GAT chain of cell ids when available, else the cell.
+    if gat is not None:
+        chain = gat.causal_chain(cell, depth=3)
+        origin = " -> ".join(chain) if chain else cell
+    else:
+        origin = cell
+
+    fm = Message(
+        pillar="FM", kind="fault_prediction",
+        payload={
+            "fault_class": fault_class,
+            "probable_cause": f"model-predicted {fault_class}",
+            "gnb": gnb,
+            "origin_node": origin,
+            "affected_cell": cell,
+            "horizon_rops": cfg["horizon"],
+            "confidence": conf,
+        },
+    )
+
+    bus = AnalysisBus()
+    bus.publish(fm)
+    PMStub(bus).assess()
+    CMStub(bus).propose()
+    advisory = CorrelationEngine(bus).correlate()
+    if advisory is None:
+        print("[advisory] correlation produced no advisory; skipping")
+        return None
+
+    print("\n=== AutoFM advisory (from model prediction) ===")
+    print(advisory.render())
+    return {
+        "what": advisory.what,
+        "where": advisory.where,
+        "when": advisory.when,
+        "why": advisory.why,
+        "action": advisory.action,
+        "confidence": advisory.confidence,
+    }
 
 
 def run(cfg: dict) -> dict:
@@ -97,6 +175,19 @@ def run(cfg: dict) -> dict:
     if cfg["compressor"] == "pca":
         print(f"      PCA explained variance: {comp.explained_variance:.3f}")
 
+    # Optional GAT topology-fusion stage. No-op unless use_gat is set. It
+    # enriches each window's latent with neighbour-cell context and preserves
+    # the (N, k, latent_dim) contract, so the classifier is unchanged.
+    gat = None
+    if cfg.get("use_gat", False):
+        gat = GATFusion(latent_dim=cfg["latent_dim"], seed=cfg["seed"])
+        print(f"[gat] topology fusion active "
+              f"({'PyG' if gat.gat.use_pyg else 'dense-fallback'}) - "
+              f"enriching latents with within-gNB neighbour context")
+        Ztr = gat.fit_transform(Ztr, prep.train.cells)
+        Zval = gat.transform(Zval, prep.val.cells)
+        Zte = gat.transform(Zte, prep.test.cells)
+
     head = cfg.get("clf_head", "softmax")
     backbone = cfg.get("clf_backbone", "transformer")
     print(f"[5/5] Training temporal classifier ({cfg['clf_epochs']} epochs, "
@@ -118,10 +209,41 @@ def run(cfg: dict) -> dict:
             else np.empty(0, dtype=np.int64))
     mean_unc = float(unc.mean()) if len(unc) else float("nan")
 
+    # If GAT is active, trace a causal chain for one predicted-fault example
+    # (first test window whose predicted class is a non-Normal fault). This is
+    # the "why" that later feeds the advisory layer.
+    causal_chain: list[str] = []
+    if gat is not None and len(pred):
+        fault_rows = np.where(pred != 0)[0]
+        if len(fault_rows):
+            ex = int(fault_rows[0])
+            causal_chain = gat.causal_chain(str(prep.test.cells[ex]), depth=3)
+
     metrics = compute_all(
         prep.test.y_class, pred, CLASS_NAMES, proba=proba, uncertainty=unc,
     )
     test_f1 = metrics["multiclass"]["macro_f1"]
+
+    # Optional conformal prediction. No-op unless use_conformal is set. The
+    # validation split is the calibration slice (the model never trained on it),
+    # so coverage is honest. Computes 95% sets on the test split.
+    conformal_coverage = None
+    conformal_set_size = None
+    if cfg.get("use_conformal", False):
+        proba_val = clf.predict_proba(Zval)
+        if len(proba_val) and len(proba):
+            cp = ConformalPredictor(confidence_level=0.95)
+            cp.calibrate(proba_val, prep.val.y_class)
+            sets = cp.predict_set(proba)
+            conformal_coverage = cp.empirical_coverage(sets, prep.test.y_class)
+            conformal_set_size = cp.mean_set_size(sets)
+            metrics["conformal"] = {
+                "target_coverage": 0.95,
+                "empirical_coverage": conformal_coverage,
+                "mean_set_size": conformal_set_size,
+            }
+        else:
+            print("[conformal] skipped - empty validation or test split")
     present = sorted(set(prep.test.y_class) | set(pred))
     report = classification_report(
         prep.test.y_class, pred,
@@ -142,13 +264,33 @@ def run(cfg: dict) -> dict:
     print(format_summary(metrics, CLASS_NAMES))
     print("\nPer-class report:")
     print(report)
+    if gat is not None:
+        if causal_chain:
+            print(f"[gat] causal chain (predicted fault): "
+                  f"{' -> '.join(causal_chain)}")
+        else:
+            print("[gat] causal chain: no non-Normal prediction to trace")
+    if conformal_coverage is not None:
+        print(f"[conformal] target 95% coverage | "
+              f"empirical {conformal_coverage * 100:.1f}% | "
+              f"mean set size {conformal_set_size:.2f}")
     print(f"Total wall time: {elapsed:.1f}s on device "
           f"{getattr(clf, 'device', 'cpu')}")
+
+    # Optional advisory built from the model's REAL prediction (not hardcoded).
+    advisory_fields = None
+    if cfg.get("advisory", False):
+        advisory_fields = _build_advisory(
+            cfg, proba, pred, unc, prep.test.cells, gat)
 
     # Optional machine-readable metrics dump for tracking across runs.
     metrics_out = cfg.get("metrics_out")
     if metrics_out:
         payload = dict(metrics)
+        payload["conformal_coverage"] = conformal_coverage
+        payload["conformal_set_size"] = conformal_set_size
+        if advisory_fields is not None:
+            payload["advisory"] = advisory_fields
         payload["config"] = {k: cfg[k] for k in (
             "compressor", "clf_backbone", "clf_head", "horizon", "window_k",
             "latent_dim", "max_days", "max_gnbs") if k in cfg}
@@ -171,7 +313,11 @@ def run(cfg: dict) -> dict:
         print(f"[metrics] wrote Prometheus exposition -> {prom_out}")
 
     result = {"test_macro_f1": test_f1, "mean_uncertainty": mean_unc,
-              "elapsed_sec": elapsed}
+              "elapsed_sec": elapsed, "use_gat": gat is not None,
+              "causal_chain": causal_chain,
+              "conformal_coverage": conformal_coverage,
+              "conformal_set_size": conformal_set_size,
+              "advisory": advisory_fields}
     result.update({
         "weighted_f1": metrics["multiclass"]["weighted_f1"],
         "balanced_accuracy": metrics["multiclass"]["balanced_accuracy"],
@@ -193,6 +339,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="Override the classifier head from config.")
     ap.add_argument("--backbone", choices=["transformer", "patchtst"], default=None,
                     help="Override the temporal backbone from config.")
+    ap.add_argument("--use-gat", action="store_true", default=False,
+                    help="Insert the GAT topology-fusion stage (default off).")
+    ap.add_argument("--use-conformal", action="store_true", default=False,
+                    help="Calibrate 95%% conformal coverage sets on the val slice.")
+    ap.add_argument("--advisory", action="store_true", default=False,
+                    help="Build an FM/PM/CM advisory from the model's prediction.")
     ap.add_argument("--max-days", type=int, default=None)
     ap.add_argument("--max-gnbs", type=int, default=None)
     ap.add_argument("--metrics-out", default=None,
@@ -209,6 +361,12 @@ def main(argv: list[str] | None = None) -> int:
         cfg["clf_head"] = args.head
     if args.backbone:
         cfg["clf_backbone"] = args.backbone
+    if args.use_gat:
+        cfg["use_gat"] = True
+    if args.use_conformal:
+        cfg["use_conformal"] = True
+    if args.advisory:
+        cfg["advisory"] = True
     if args.max_days is not None:
         cfg["max_days"] = args.max_days
     if args.max_gnbs is not None:
