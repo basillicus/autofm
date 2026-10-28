@@ -92,7 +92,14 @@ def _day_dirs(root: Path, level: str) -> list[Path]:
 
 
 def _read_group(day_dir: Path, group: str, level: str) -> pd.DataFrame | None:
-    """Read one <group>_<level>_<date>.csv if present, numeric-coerced."""
+    """Read one <group>_<level>_<date> file if present, numeric-coerced.
+
+    Prefers the Parquet copy written by ``autofm.data.to_parquet`` (already
+    typed, so no parsing or coercion) and falls back to the CSV.
+    """
+    matches = list(day_dir.glob(f"{group}_{level}_*.parquet"))
+    if matches:
+        return pd.read_parquet(matches[0])
     matches = list(day_dir.glob(f"{group}_{level}_*.csv"))
     if not matches:
         return None
