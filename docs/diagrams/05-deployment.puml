@@ -1,13 +1,14 @@
 @startuml autofm-deployment
+' activates new C4 style
 !NEW_C4_STYLE=1
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Deployment.puml
-!include style.puml
 
-' ============================================================================
-' Deployment view - the same codebase on two targets: a developer laptop and
-' a Leonardo HPC node (4x A100). Device selection is runtime; CUDA-only
-' features are gated so the laptop path never touches them.
-' ============================================================================
+SHOW_PERSON_OUTLINE()
+AddRelTag("async", $lineStyle=DashedLine())
+AddRelTag("sync", $lineStyle=SolidLine())
+skinparam linetype ortho
+
+title autofm - Deployment View
 
 Deployment_Node(laptop, "Developer Laptop", "macOS / Linux") {
     Deployment_Node(cpu, "CPU / Apple MPS", "single process") {
@@ -30,11 +31,11 @@ Deployment_Node(leonardo, "Leonardo Node (CINECA)", "SLURM-scheduled, GPU") {
     }
 }
 
-Rel(r0, r1, "all-reduce gradients", "NCCL")
-Rel(r1, r2, "all-reduce gradients", "NCCL")
-Rel(r2, r3, "all-reduce gradients", "NCCL")
+Rel_Neighbor(r0, r1, "all-reduce", "NCCL", $tags="async")
+Rel_Neighbor(r1, r2, "all-reduce", "NCCL", $tags="async")
+Rel_Neighbor(r2, r3, "all-reduce", "NCCL", $tags="async")
 Rel_D(torchrun, ds, "reads windows", "file")
 Rel_D(torchrun, ms, "writes checkpoints", "file")
 
-Lay_R(laptop, leonardo)
+SHOW_LEGEND()
 @enduml

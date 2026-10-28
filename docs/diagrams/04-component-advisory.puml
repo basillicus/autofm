@@ -1,20 +1,21 @@
 @startuml autofm-component-advisory
+' activates new C4 style
 !NEW_C4_STYLE=1
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
-!include style.puml
 
-' ============================================================================
-' Level 3 - Component (Advisory layer), production architecture.
-' The Analysis Bus is central correlation infrastructure: the three pillars
-' publish to it, the Correlation Engine consumes from it (not a dead-end).
-' ============================================================================
+SHOW_PERSON_OUTLINE()
+AddRelTag("async", $lineStyle=DashedLine())
+AddRelTag("sync", $lineStyle=SolidLine())
+skinparam linetype ortho
+
+title autofm - Advisory Layer Components
 
 System(FM, "FM Prediction", "Calibrated fault type, uncertainty, localization, TTF, causal chain")
 
 Container_Boundary(ADV, "autofm - advisory layer") {
-    Component(FMPUB, "FM Publisher", "autofm.advisory", "Publishes the fault prediction onto the bus")
-    Component(PM, "PM Pillar", "autofm.advisory.pm", "Estimates SLA breach risk and horizon")
-    Component(CM, "CM Pillar", "autofm.advisory.cm", "Proposes ranked remediation actions")
+    Component(FMPUB, "FM Publisher", "autofm.advisory", "Publishes the fault prediction")
+    Component(PM, "PM Pillar", "autofm.advisory.pm", "SLA breach risk and horizon")
+    Component(CM, "CM Pillar", "autofm.advisory.cm", "Ranked remediation actions")
     ComponentQueue(BUS, "Analysis Bus", "in-process · broker-ready", "Typed FM/PM/CM messages")
     Component(CORR, "Correlation Engine", "autofm.advisory.correlation", "Fuses FM+PM+CM into one ranked advisory")
 }
@@ -22,18 +23,17 @@ Container_Boundary(ADV, "autofm - advisory layer") {
 Person(OPERATOR, "Network Operator", "Acts on advisories")
 System_Ext(AUTOMATION, "Automation System", "Closed-loop remediation")
 
-' producers publish onto the bus (async)
-Rel_D(FM, FMPUB, "fault prediction")
+Rel_D(FM, FMPUB, "prediction")
+
+' pillars publish onto the bus (async)
 Rel_D(FMPUB, BUS, "publishes FM", "message", $tags="async")
-Rel_D(PM, BUS, "publishes SLA risk", "message", $tags="async")
-Rel_D(CM, BUS, "publishes actions", "message", $tags="async")
+Rel_D(PM, BUS, "SLA risk", "message", $tags="async")
+Rel_D(CM, BUS, "actions", "message", $tags="async")
 
 ' correlator consumes the bus (async), emits the advisory
-Rel_D(BUS, CORR, "consumes FM/PM/CM", "message", $tags="async")
-Rel_D(CORR, OPERATOR, "delivers ranked advisory")
-Rel_D(CORR, AUTOMATION, "advisory for closed-loop", "API", $tags="async")
+Rel_D(BUS, CORR, "consumes", "message", $tags="async")
+Rel_D(CORR, OPERATOR, "advisory")
+Rel_D(CORR, AUTOMATION, "closed-loop", "API", $tags="async")
 
-Lay_R(FMPUB, PM)
-Lay_R(PM, CM)
-Lay_R(OPERATOR, AUTOMATION)
+SHOW_LEGEND()
 @enduml

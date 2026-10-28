@@ -1,12 +1,17 @@
 @startuml autofm-context
+' activates new C4 style
 !NEW_C4_STYLE=1
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
-!include style.puml
 
-' ============================================================================
-' Level 1 - System Context (production architecture).
-' Role-split actors, grouped data-plane sources, training platform + consumers.
-' ============================================================================
+SHOW_PERSON_OUTLINE()
+AddRelTag("async", $lineStyle=DashedLine())
+AddRelTag("sync", $lineStyle=SolidLine())
+skinparam linetype ortho
+
+title autofm - System Context
+
+Person(ENGINEER, "ML Engineer / SRE", "Trains, tunes, operates")
+Person(OPERATOR, "Network Operator", "Acts on advisories")
 
 System_Boundary(DATAPLANE, "O-RAN Data Plane") {
     System_Ext(TELEMETRY, "Telemetry Export", "Infra / platform / RAN, per-ROP")
@@ -15,24 +20,21 @@ System_Boundary(DATAPLANE, "O-RAN Data Plane") {
 
 System(AUTOFM, "autofm", "Forecasts O-RAN faults from multi-level telemetry and raises calibrated, explainable advisories")
 
-Person(ENGINEER, "ML Engineer / SRE", "Trains, tunes, operates")
-Person(OPERATOR, "Network Operator", "Acts on advisories")
 System_Ext(HPC, "GPU / HPC Cluster", "Distributed training platform")
 System_Ext(AUTOMATION, "Automation System", "Closed-loop remediation")
 
-' inputs (down into autofm)
+' data sources flow down into autofm
 Rel_D(TELEMETRY, AUTOFM, "streams counters", "CSV")
 Rel_D(ALARMS, AUTOFM, "provides labels", "CSV")
 
-' operations + training platform
-Rel_D(ENGINEER, AUTOFM, "operates & trains", "CLI / SLURM")
-Rel_D(AUTOFM, HPC, "runs distributed training on", "torchrun / NCCL")
+' engineer to the left, training platform to the right (neighbor placement;
+' short labels keep neighbor edges uncrowded)
+Rel_Neighbor(ENGINEER, AUTOFM, "operates", "CLI")
+Rel_Neighbor(AUTOFM, HPC, "trains on", "NCCL")
 
-' advisory consumers (down)
+' advisory consumers below
 Rel_D(AUTOFM, OPERATOR, "delivers advisory")
 Rel_D(AUTOFM, AUTOMATION, "advisory for closed-loop", "API", $tags="async")
 
-Lay_R(TELEMETRY, ALARMS)
-Lay_R(ENGINEER, OPERATOR)
-Lay_R(OPERATOR, AUTOMATION)
+SHOW_LEGEND()
 @enduml
