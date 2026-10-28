@@ -1,14 +1,28 @@
 # Architecture diagrams (C4-PlantUML)
 
 The C4 diagrams in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) are authored as
-**C4-PlantUML**. The `.puml` files are the **source of truth**; the rendered
-SVGs are produced automatically by CI - you do not hand-commit image files.
+**C4-PlantUML**. Each `.puml` is **self-contained** (sets `!NEW_C4_STYLE=1`,
+includes the public C4-PlantUML stdlib, and declares its own person-outline and
+`async`/`sync` relationship tags). The `.puml` files are the **source of truth**;
+the rendered SVGs are produced automatically by CI - you do not hand-commit
+image files.
 
 | View | Source | Rendered (by CI) |
 |------|--------|------------------|
 | System Context (L1) | [`01-context.puml`](01-context.puml) | `01-context.svg` |
 | Container (L2) | [`02-container.puml`](02-container.puml) | `02-container.svg` |
-| Shared style/theme | [`style.puml`](style.puml) | - |
+| Component - FM pipeline (L3) | [`03-component-fm.puml`](03-component-fm.puml) | `03-component-fm.svg` |
+| Component - Advisory layer (L3) | [`04-component-advisory.puml`](04-component-advisory.puml) | `04-component-advisory.svg` |
+| Deployment | [`05-deployment.puml`](05-deployment.puml) | `05-deployment.svg` |
+
+## Conventions
+
+- **New C4 style** (`!NEW_C4_STYLE=1`) with `SHOW_PERSON_OUTLINE()`.
+- **Relationships:** `async` edges render **dashed** (message bus, closed-loop
+  API), `sync` edges solid (file / blocking calls).
+- **Placement:** `Rel_Neighbor` / `Rel_D` with short edge labels keep the layout
+  uncrowded.
+- Every diagram ends with `SHOW_LEGEND()`.
 
 ## How rendering works (GitHub Actions)
 
@@ -37,9 +51,3 @@ which the CI runner resolves over the network - no private include server.
 java -jar plantuml.jar -tsvg docs/diagrams/*.puml
 # output is named from the @startuml id; CI renames it to match the source file.
 ```
-
-## Style
-
-[`style.puml`](style.puml) is the shared theme included by every diagram: blue
-systems, orange containers, grey external systems, flat (no shadow), orthogonal
-routing.

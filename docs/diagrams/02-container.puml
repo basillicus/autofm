@@ -1,45 +1,46 @@
 @startuml autofm-container
+' activates new C4 style
 !NEW_C4_STYLE=1
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
-!include style.puml
 
-' ============================================================================
-' Level 2 - Container (production architecture, forward-looking).
-' Shows real runnable/deployable units and stateful stores, not Python modules.
-' ============================================================================
+SHOW_PERSON_OUTLINE()
+AddRelTag("async", $lineStyle=DashedLine())
+AddRelTag("sync", $lineStyle=SolidLine())
+skinparam linetype ortho
 
-Person(engineer, "ML Engineer / SRE", "Trains, tunes, operates")
-Person(operator, "Network Operator", "Acts on advisories")
+title autofm - Container View
+
+Person(ENGINEER, "ML Engineer / SRE", "Trains, tunes, operates")
+Person(OPERATOR, "Network Operator", "Acts on advisories")
 
 System_Boundary(SOURCES, "O-RAN Data Plane") {
-    System_Ext(TELEMETRY, "Telemetry Export", "Infra / platform / RAN, per-ROP")
-    System_Ext(ALARMS, "Alarm Feed", "X.733 fault events (labels)")
+    System_Ext(TELEMETRY, "Telemetry Export", "Per-ROP CSVs")
+    System_Ext(ALARMS, "Alarm Feed", "X.733 labels")
 }
 System_Ext(AUTOMATION, "Automation System", "Closed-loop remediation")
 
 System_Boundary(AUTOFM, "autofm") {
-    Container(TRAIN, "Training Pipeline", "Python · PyTorch DDP", "Batch job: ingest, label, represent, fuse, forecast, calibrate; scales across GPUs")
-    Container(ADVISORY, "Advisory Service", "Python", "Serves calibrated predictions; correlates FM/PM/CM into a ranked advisory")
-    ContainerQueue(BUS, "Analysis Bus", "in-process today · broker-ready", "Typed FM/PM/CM messages for cross-domain correlation")
-    ContainerDb(DATASTORE, "Dataset Store", "CSV corpus", "Multi-level telemetry + alarm feed")
-    ContainerDb(MODELSTORE, "Model Store", "checkpoints / artifacts", "Trained MAE + classifier weights, calibration state")
+    Container(TRAIN, "Training Pipeline", "Python · PyTorch DDP", "Batch: ingest, label, represent, fuse, forecast, calibrate")
+    Container(ADVISORY, "Advisory Service", "Python", "Serves calibrated predictions; correlates FM/PM/CM")
+    ContainerQueue(BUS, "Analysis Bus", "in-process · broker-ready", "Typed FM/PM/CM messages")
+    ContainerDb(DATASTORE, "Dataset Store", "CSV corpus", "Multi-level telemetry + alarms")
+    ContainerDb(MODELSTORE, "Model Store", "checkpoints", "MAE + classifier weights, calibration state")
 }
 
-' ---- training (offline) ----
-Rel_D(engineer, TRAIN, "launches", "CLI / SLURM")
+' sources populate the dataset store
 Rel_D(TELEMETRY, DATASTORE, "exported to", "CSV")
 Rel_D(ALARMS, DATASTORE, "exported to", "CSV")
+
+' training path
+Rel_Neighbor(ENGINEER, TRAIN, "launches")
 Rel_D(DATASTORE, TRAIN, "reads windows", "file")
-Rel_D(TRAIN, MODELSTORE, "writes checkpoints", "file")
+Rel_Neighbor(TRAIN, MODELSTORE, "writes")
 
-' ---- serving (online) ----
+' serving path
 Rel_D(MODELSTORE, ADVISORY, "loads model", "file")
-Rel_D(DATASTORE, ADVISORY, "reads live window", "file")
-Rel_D(ADVISORY, BUS, "publishes / correlates", "message", $tags="async")
-Rel_D(ADVISORY, operator, "delivers advisory")
-Rel_D(ADVISORY, AUTOMATION, "advisory for closed-loop", "API", $tags="async")
+Rel_Neighbor(ADVISORY, BUS, "publishes", "", $tags="async")
+Rel_D(ADVISORY, OPERATOR, "delivers advisory")
+Rel_D(ADVISORY, AUTOMATION, "closed-loop", "API", $tags="async")
 
-Lay_R(engineer, operator)
-Lay_R(TELEMETRY, ALARMS)
-Lay_R(DATASTORE, MODELSTORE)
+SHOW_LEGEND()
 @enduml
