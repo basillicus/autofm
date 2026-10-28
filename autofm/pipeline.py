@@ -93,7 +93,12 @@ def _build_advisory(cfg, proba, pred, unc, cells, gat) -> dict | None:
     ex = int(fault_rows[int(np.argmax(conf_of_pred))])
 
     cell = str(cells[ex])
-    gnb = gnb_of_cell(cell)
+    # Prefer the authoritative cell -> gNB topology map (from the loader's fdn
+    # parse, carried on the GAT); fall back to the lossy regex only if absent.
+    if gat is not None and getattr(gat, "cell_to_gnb", None):
+        gnb = str(gat.cell_to_gnb.get(cell, gnb_of_cell(cell)))
+    else:
+        gnb = gnb_of_cell(cell)
     fault_class = CLASS_NAMES[int(pred[ex])]
     # confidence = 1 - uncertainty for this example, clipped to [0, 1].
     conf = 1.0 - float(unc[ex]) if ex < len(unc) else float(proba[ex, pred[ex]])
@@ -155,6 +160,12 @@ def run(cfg: dict) -> dict:
     labeled = label_frame(d.frame, alarms, horizon=cfg["horizon"])
     print(f"      positive rate {labeled['will_fault'].mean():.3f}")
 
+    # Authoritative cell -> gNB topology map from the loader's fdn parse. Used
+    # by the GAT (correct within-gNB grouping) and the advisory (real gNB).
+    cell_to_gnb = (
+        d.frame[["cell", "gnb"]].dropna().astype(str)
+        .drop_duplicates("cell").set_index("cell")["gnb"].to_dict())
+
     print(f"[3/5] Windowing (k={cfg['window_k']}) + leakage-safe split ...")
     prep = prepare(labeled, d.feature_cols, k=cfg["window_k"])
     print(f"      train {prep.train.X.shape}  val {prep.val.X.shape}  "
@@ -180,7 +191,8 @@ def run(cfg: dict) -> dict:
     # the (N, k, latent_dim) contract, so the classifier is unchanged.
     gat = None
     if cfg.get("use_gat", False):
-        gat = GATFusion(latent_dim=cfg["latent_dim"], seed=cfg["seed"])
+        gat = GATFusion(latent_dim=cfg["latent_dim"], seed=cfg["seed"],
+                        cell_to_gnb=cell_to_gnb)
         print(f"[gat] topology fusion active "
               f"({'PyG' if gat.gat.use_pyg else 'dense-fallback'}) - "
               f"enriching latents with within-gNB neighbour context")
