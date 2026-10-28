@@ -2,21 +2,36 @@
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
 !include style.puml
 
-System_Boundary(SOURCES, "Data Sources") {
-    System_Ext(TELEMETRY, "Telemetry Export", "Per-ROP CSVs: infra, platform, RAN")
+' ============================================================================
+' Level 1 - System Context (production architecture).
+' Role-split actors, grouped data-plane sources, training platform + consumers.
+' ============================================================================
+
+System_Boundary(DATAPLANE, "O-RAN Data Plane") {
+    System_Ext(TELEMETRY, "Telemetry Export", "Infra / platform / RAN, per-ROP")
     System_Ext(ALARMS, "Alarm Feed", "X.733 fault events (labels)")
 }
 
 System(AUTOFM, "autofm", "Forecasts O-RAN faults from multi-level telemetry and raises calibrated, explainable advisories")
 
-Person(USER, "Network Operator", "Acts on advisories")
+Person(ENGINEER, "ML Engineer / SRE", "Trains, tunes, operates")
+Person(OPERATOR, "Network Operator", "Acts on advisories")
+System_Ext(HPC, "GPU / HPC Cluster", "Distributed training platform")
 System_Ext(AUTOMATION, "Automation System", "Closed-loop remediation")
 
+' inputs (down into autofm)
 Rel_D(TELEMETRY, AUTOFM, "streams counters", "CSV")
 Rel_D(ALARMS, AUTOFM, "provides labels", "CSV")
-Rel_D(AUTOFM, USER, "delivers advisory")
-Rel_D(AUTOFM, AUTOMATION, "advisory for closed-loop action")
+
+' operations + training platform
+Rel_D(ENGINEER, AUTOFM, "operates & trains", "CLI / SLURM")
+Rel_D(AUTOFM, HPC, "runs distributed training on", "torchrun / NCCL")
+
+' advisory consumers (down)
+Rel_D(AUTOFM, OPERATOR, "delivers advisory")
+Rel_D(AUTOFM, AUTOMATION, "advisory for closed-loop", "API")
 
 Lay_R(TELEMETRY, ALARMS)
-Lay_R(USER, AUTOMATION)
+Lay_R(ENGINEER, OPERATOR)
+Lay_R(OPERATOR, AUTOMATION)
 @enduml
