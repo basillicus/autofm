@@ -7,34 +7,41 @@ SHOW_PERSON_OUTLINE()
 AddRelTag("async", $lineStyle=DashedLine())
 AddRelTag("sync", $lineStyle=SolidLine())
 skinparam linetype ortho
+skinparam nodesep 70
+skinparam ranksep 90
 
 title autofm - System Context
 
-Person(ENGINEER, "ML Engineer / SRE", "Trains, tunes, operates")
+Person(ENGINEER, "ML Engineer / SRE", "Trains and operates")
 Person(OPERATOR, "Network Operator", "Acts on advisories")
 
 System_Boundary(DATAPLANE, "O-RAN Data Plane") {
-    System_Ext(TELEMETRY, "Telemetry Export", "Infra / platform / RAN, per-ROP")
-    System_Ext(ALARMS, "Alarm Feed", "X.733 fault events (labels)")
+    System_Ext(TELEMETRY, "Telemetry Export", "Multi-level counters")
+    System_Ext(ALARMS, "Alarm Feed", "X.733 labels")
 }
 
-System(AUTOFM, "autofm", "Forecasts O-RAN faults from multi-level telemetry and raises calibrated, explainable advisories")
+System(AUTOFM, "autofm", "Predicts faults; raises calibrated advisories")
 
-System_Ext(HPC, "GPU / HPC Cluster", "Distributed training platform")
+System_Ext(HPC, "GPU / HPC Cluster", "Training platform")
 System_Ext(AUTOMATION, "Automation System", "Closed-loop remediation")
 
-' data sources flow down into autofm
-Rel_D(TELEMETRY, AUTOFM, "streams counters", "CSV")
-Rel_D(ALARMS, AUTOFM, "provides labels", "CSV")
+' data sources down into autofm
+Rel_D(TELEMETRY, AUTOFM, "counters", "CSV")
+Rel_D(ALARMS, AUTOFM, "labels", "CSV")
 
-' engineer to the left, training platform to the right (neighbor placement;
-' short labels keep neighbor edges uncrowded)
-Rel_Neighbor(ENGINEER, AUTOFM, "operates", "CLI")
-Rel_Neighbor(AUTOFM, HPC, "trains on", "NCCL")
+' engineer launches training; autofm trains on the cluster (vertical edges
+' have room for labels, unlike tight horizontal neighbor edges)
+Rel_D(ENGINEER, AUTOFM, "operates")
+Rel_D(AUTOFM, HPC, "trains on")
 
-' advisory consumers below
-Rel_D(AUTOFM, OPERATOR, "delivers advisory")
-Rel_D(AUTOFM, AUTOMATION, "advisory for closed-loop", "API", $tags="async")
+' advisory consumers down
+Rel_D(AUTOFM, OPERATOR, "advisory")
+Rel_D(AUTOFM, AUTOMATION, "closed-loop", "API", $tags="async")
+
+Lay_R(ENGINEER, TELEMETRY)
+Lay_R(TELEMETRY, ALARMS)
+Lay_R(ALARMS, HPC)
+Lay_R(OPERATOR, AUTOMATION)
 
 SHOW_LEGEND()
 @enduml
