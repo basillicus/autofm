@@ -1,4 +1,5 @@
 @startuml autofm-component-fm
+!NEW_C4_STYLE=1
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
 !include style.puml
 

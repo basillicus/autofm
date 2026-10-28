@@ -1,4 +1,5 @@
 @startuml autofm-component-advisory
+!NEW_C4_STYLE=1
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
 !include style.puml
 
@@ -21,16 +22,16 @@ Container_Boundary(ADV, "autofm - advisory layer") {
 Person(OPERATOR, "Network Operator", "Acts on advisories")
 System_Ext(AUTOMATION, "Automation System", "Closed-loop remediation")
 
-' producers publish onto the bus
+' producers publish onto the bus (async)
 Rel_D(FM, FMPUB, "fault prediction")
-Rel_D(FMPUB, BUS, "publishes FM", "message")
-Rel_D(PM, BUS, "publishes SLA risk", "message")
-Rel_D(CM, BUS, "publishes actions", "message")
+Rel_D(FMPUB, BUS, "publishes FM", "message", $tags="async")
+Rel_D(PM, BUS, "publishes SLA risk", "message", $tags="async")
+Rel_D(CM, BUS, "publishes actions", "message", $tags="async")
 
-' correlator consumes the bus, emits the advisory
-Rel_D(BUS, CORR, "consumes FM/PM/CM", "message")
+' correlator consumes the bus (async), emits the advisory
+Rel_D(BUS, CORR, "consumes FM/PM/CM", "message", $tags="async")
 Rel_D(CORR, OPERATOR, "delivers ranked advisory")
-Rel_D(CORR, AUTOMATION, "advisory for closed-loop", "API")
+Rel_D(CORR, AUTOMATION, "advisory for closed-loop", "API", $tags="async")
 
 Lay_R(FMPUB, PM)
 Lay_R(PM, CM)

@@ -1,4 +1,5 @@
 @startuml autofm-context
+!NEW_C4_STYLE=1
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
 !include style.puml
 
@@ -29,7 +30,7 @@ Rel_D(AUTOFM, HPC, "runs distributed training on", "torchrun / NCCL")
 
 ' advisory consumers (down)
 Rel_D(AUTOFM, OPERATOR, "delivers advisory")
-Rel_D(AUTOFM, AUTOMATION, "advisory for closed-loop", "API")
+Rel_D(AUTOFM, AUTOMATION, "advisory for closed-loop", "API", $tags="async")
 
 Lay_R(TELEMETRY, ALARMS)
 Lay_R(ENGINEER, OPERATOR)
