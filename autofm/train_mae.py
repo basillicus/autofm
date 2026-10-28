@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
 import os
 import statistics
 import time
@@ -32,13 +33,13 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
-from autofm.data.features import prepare
+from autofm.data.features import WindowRows, prepare_rows
 from autofm.data.labels import label_frame, load_alarms
 from autofm.data.loader import load
-from autofm.model.compress import _MAENet, _flatten_time
+from autofm.model.compress import _MAENet
 from autofm.pipeline import load_config
 
 
@@ -112,10 +113,13 @@ def _setup(is_distributed: bool, local_rank: int) -> torch.device:
     """Init the process group (NCCL) for DDP; no-op in single-process mode."""
     # Validate the CUDA context first so a runtime/driver mismatch yields a
     # clear message instead of an opaque multi-rank NCCL stack trace.
+    # Select this rank's GPU first: otherwise the preflight below opens a
+    # context on cuda:0 in every rank.
+    if is_distributed and torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
     _preflight_cuda(is_distributed)
     if is_distributed:
         torch.distributed.init_process_group(backend="nccl")
-        torch.cuda.set_device(local_rank)
     return _pick_device(local_rank)
 
 
@@ -171,6 +175,37 @@ def _write_bench(bench_out, step_ms, local_batch, world_size, is_distributed,
             f"-> {out_path}")
 
 
+class _WindowStepRows(Dataset):
+    """The flattened train windows, served from the per-ROP rows.
+
+    Item ``j`` is step ``j % k`` of window ``j // k`` - the same row, in the same
+    order, as ``windows().reshape(-1, F)[j]`` - without materialising the ``k``
+    overlapping copies. ``__getitems__`` lets the DataLoader fetch a whole
+    batch with one fancy index instead of one row at a time.
+    """
+
+    def __init__(self, rows: np.ndarray, starts: np.ndarray, k: int):
+        self.rows, self.starts, self.k = rows, starts, k
+
+    def __len__(self) -> int:
+        return len(self.starts) * self.k
+
+    def _row(self, j):
+        j = np.asarray(j, dtype=np.int64)
+        return self.starts[j // self.k] + j % self.k
+
+    def __getitem__(self, j):
+        return torch.from_numpy(self.rows[self._row(j)])
+
+    def __getitems__(self, js):
+        return torch.from_numpy(self.rows[self._row(js)])
+
+
+def _as_batch(x: torch.Tensor) -> tuple[torch.Tensor]:
+    """collate_fn: ``__getitems__`` already returns the stacked batch."""
+    return (x,)
+
+
 # --------------------------------------------------------------------------- #
 # Training
 # --------------------------------------------------------------------------- #
@@ -190,13 +225,14 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
     torch.manual_seed(cfg["seed"])
 
     # ---- Data --------------------------------------------------------------
-    # Default: every rank loads the same slice. With data_cache set (and DDP),
-    # rank 0 prepares once and the other ranks memory-map its train rows, so a
-    # node holds one copy of the data instead of one per GPU.
+    # The MAE trains on every step of every train window. Windows overlap, so
+    # it reads them through the per-ROP rows instead of k materialised copies.
+    # Default: every rank prepares the same slice. With data_cache set (and
+    # DDP), rank 0 prepares once and the other ranks load its train rows.
     cache = None
     if is_distributed and cfg.get("data_cache"):
         tag = f"{os.environ.get('SLURM_JOB_ID', 'local')}-{os.environ.get('MASTER_PORT', '0')}"
-        cache = Path(cfg["data_cache"]) / f"mae-train-{tag}.npy"
+        cache = Path(cfg["data_cache"]) / f"mae-train-{tag}.npz"
 
     prep = None
     if cache is None or is_main:
@@ -208,27 +244,31 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
             load_alarms(str(Path(cfg["dataset_root"]) / "alarms" / "alarms.csv")),
             horizon=cfg["horizon"],
         )
-        prep = prepare(labeled, d.feature_cols, k=cfg["window_k"])
+        prep = prepare_rows(labeled, d.feature_cols, k=cfg["window_k"])
         del d, labeled
-        flat = _flatten_time(prep.train.X).astype(np.float32, copy=False)
+        train_rows: WindowRows = prep.train
     if cache is not None:
         if is_main:
             cache.parent.mkdir(parents=True, exist_ok=True)
             tmp = cache.with_name(cache.name + ".tmp")
             with open(tmp, "wb") as fh:
-                np.save(fh, flat)
+                np.savez(fh, rows=train_rows.rows, starts=train_rows.starts)
             os.replace(tmp, cache)
-            prep.train.X = None
             log(f"[data] shared train rows via {cache}")
         else:
             # Poll instead of a collective: preparing can outlast NCCL timeouts.
             while not cache.exists():
                 time.sleep(5)
-        flat = np.load(cache, mmap_mode="c")
-    log(f"[data] train rows {len(flat)}, feature dim {flat.shape[1]}")
+            with np.load(cache) as z:
+                train_rows = WindowRows(z["rows"], z["starts"], cfg["window_k"],
+                                        None, None, None)
+    dataset = _WindowStepRows(train_rows.rows, train_rows.starts, train_rows.k)
+    in_dim = train_rows.rows.shape[1]
+    log(f"[data] train rows {len(dataset)} ({len(train_rows.rows)} distinct), "
+        f"feature dim {in_dim}")
 
     # ---- Model + DDP -------------------------------------------------------
-    net = _MAENet(flat.shape[1], cfg["latent_dim"]).to(device)
+    net = _MAENet(in_dim, cfg["latent_dim"]).to(device)
     if is_distributed:
         net = nn.parallel.DistributedDataParallel(
             net, device_ids=[local_rank], output_device=local_rank)
@@ -248,7 +288,6 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
             torch.cuda.nvtx.range_pop()
 
     # ---- DataLoader + DistributedSampler -----------------------------------
-    dataset = TensorDataset(torch.from_numpy(flat))
     sampler = (DistributedSampler(dataset, num_replicas=world_size, rank=rank,
                                   shuffle=True, seed=cfg["seed"])
                if is_distributed else None)
@@ -262,13 +301,18 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
     loader = DataLoader(
         dataset, batch_size=cfg.get("batch_size", 512),
         shuffle=(sampler is None), sampler=sampler, generator=g,
-        num_workers=num_workers, pin_memory=pin,
+        num_workers=num_workers, pin_memory=pin, collate_fn=_as_batch,
         persistent_workers=(num_workers > 0),
+        # Python 3.14 defaults to "forkserver", which pickles the dataset into
+        # /dev/shm for the workers: one full copy per rank, which runs out of
+        # space at full scale. Forked workers share the parent's memory.
+        multiprocessing_context=("fork" if num_workers > 0
+                                 and "fork" in mp.get_all_start_methods() else None),
     )
 
     mask_frac = cfg.get("mask_frac", 0.4)
     epochs = cfg["mae_epochs"]
-    n = len(flat)
+    n = len(dataset)
     # Benchmarking: skip a few warmup steps, then time the rest. Only active
     # when a --bench-out path is given, so normal training is unchanged.
     bench = bench_out is not None
@@ -332,7 +376,7 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
         out.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {"state_dict": core.state_dict(),
-             "in_dim": flat.shape[1],
+             "in_dim": in_dim,
              "latent_dim": cfg["latent_dim"]},
             out,
         )
@@ -341,11 +385,12 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
         # Quick reconstruction MSE on the val split as a sanity eval.
         core.eval()
         # Batched, so a large val split doesn't have to fit on the GPU at once.
-        vflat_all = _flatten_time(prep.val.X).astype(np.float32, copy=False)
+        val = _WindowStepRows(prep.val.rows, prep.val.starts, prep.val.k)
         sq, count = 0.0, 0
         with torch.no_grad():
-            for i in range(0, len(vflat_all), 262_144):
-                vflat = torch.from_numpy(vflat_all[i:i + 262_144]).to(device)
+            for i in range(0, len(val), 262_144):
+                idx = np.arange(i, min(i + 262_144, len(val)))
+                vflat = val.__getitems__(idx).to(device)
                 vrecon = core(vflat)
                 sq += float(nn.functional.mse_loss(vrecon, vflat, reduction="sum"))
                 count += vflat.numel()
@@ -373,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--data-cache", default=None,
                     help="DDP only: rank 0 prepares the data once and writes the "
                          "train rows to a file in this directory; the other ranks "
-                         "memory-map it (one copy per node instead of one per GPU).")
+                         "load it instead of preparing the data themselves.")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
