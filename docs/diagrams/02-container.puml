@@ -1,4 +1,5 @@
 @startuml autofm-container
+!NEW_C4_STYLE=1
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
 !include style.puml
 
@@ -34,9 +35,9 @@ Rel_D(TRAIN, MODELSTORE, "writes checkpoints", "file")
 ' ---- serving (online) ----
 Rel_D(MODELSTORE, ADVISORY, "loads model", "file")
 Rel_D(DATASTORE, ADVISORY, "reads live window", "file")
-Rel_D(ADVISORY, BUS, "publishes / correlates", "message")
+Rel_D(ADVISORY, BUS, "publishes / correlates", "message", $tags="async")
 Rel_D(ADVISORY, operator, "delivers advisory")
-Rel_D(ADVISORY, AUTOMATION, "advisory for closed-loop", "API")
+Rel_D(ADVISORY, AUTOMATION, "advisory for closed-loop", "API", $tags="async")
 
 Lay_R(engineer, operator)
 Lay_R(TELEMETRY, ALARMS)

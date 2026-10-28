@@ -1,0 +1,40 @@
+@startuml autofm-deployment
+!NEW_C4_STYLE=1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Deployment.puml
+!include style.puml
+
+' ============================================================================
+' Deployment view - the same codebase on two targets: a developer laptop and
+' a Leonardo HPC node (4x A100). Device selection is runtime; CUDA-only
+' features are gated so the laptop path never touches them.
+' ============================================================================
+
+Deployment_Node(laptop, "Developer Laptop", "macOS / Linux") {
+    Deployment_Node(cpu, "CPU / Apple MPS", "single process") {
+        Container(devproc, "autofm", "python -m autofm.pipeline", "Smoke-scale run; AMP/NCCL gated off")
+    }
+}
+
+Deployment_Node(leonardo, "Leonardo Node (CINECA)", "SLURM-scheduled, GPU") {
+    Deployment_Node(slurm, "SLURM job", "env/train.sbatch") {
+        Deployment_Node(torchrun, "torchrun", "--nproc_per_node=4 · DDP / NCCL") {
+            Container(r0, "rank 0", "GPU 0", "AMP · TF32 · NVTX")
+            Container(r1, "rank 1", "GPU 1", "AMP · TF32 · NVTX")
+            Container(r2, "rank 2", "GPU 2", "AMP · TF32 · NVTX")
+            Container(r3, "rank 3", "GPU 3", "AMP · TF32 · NVTX")
+        }
+    }
+    Deployment_Node(storage, "Shared storage", "scratch / work") {
+        ContainerDb(ds, "Dataset Store", "CSV corpus", "")
+        ContainerDb(ms, "Model Store", "checkpoints", "")
+    }
+}
+
+Rel(r0, r1, "all-reduce gradients", "NCCL")
+Rel(r1, r2, "all-reduce gradients", "NCCL")
+Rel(r2, r3, "all-reduce gradients", "NCCL")
+Rel_D(torchrun, ds, "reads windows", "file")
+Rel_D(torchrun, ms, "writes checkpoints", "file")
+
+Lay_R(laptop, leonardo)
+@enduml

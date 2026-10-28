@@ -1,21 +1,39 @@
 @startuml autofm-component-fm
+!NEW_C4_STYLE=1
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
 !include style.puml
 
-System_Boundary(SOURCES, "Data Sources") {
+' ============================================================================
+' Level 3 - Component (FM pipeline), production architecture.
+' Components grouped into responsibility bands, not a flat DAG.
+' ============================================================================
+
+System_Boundary(SOURCES, "O-RAN Data Plane") {
     System_Ext(TELEMETRY, "Telemetry Export", "Per-ROP CSVs")
     System_Ext(ALARMS, "Alarm Feed", "X.733 labels")
 }
 
 Container_Boundary(FM, "autofm - FM pipeline") {
-    Component(LOADER, "Loader", "autofm.data.loader", "Cell-centric multi-level join over the fdn topology")
-    Component(LABELER, "Alarm Labeler", "autofm.data.labels", "Forecast label: fault onsetting within the horizon")
-    Component(FEATURES, "Windowing", "autofm.data.features", "Leakage-safe split, scaling, sliding windows")
-    Component(MAE, "MAE Compressor", "autofm.model.compress", "Learned per-ROP representation + anomaly score")
-    Component(GAT, "Topology GAT", "autofm.model.gat", "Graph-attention fusion; attention = causal chain")
-    Component(PATCHTST, "PatchTST Backbone", "autofm.model.classifier", "Patch-based temporal attention")
-    Component(HEADS, "Multi-task Heads", "autofm.model.heads", "Fault type (evidential), localization, time-to-failure")
-    Component(CONFORMAL, "Conformal Calibration", "autofm.model.conformal", "Coverage-guaranteed prediction sets")
+
+    Boundary(INGEST, "Ingest & Label") {
+        Component(LOADER, "Loader", "autofm.data.loader", "Cell-centric multi-level join over the fdn topology")
+        Component(LABELER, "Alarm Labeler", "autofm.data.labels", "Leakage-safe forecast labels from the alarm feed")
+        Component(FEATURES, "Windowing", "autofm.data.features", "Chronological split, scaling, sliding windows")
+    }
+
+    Boundary(REPRESENT, "Represent & Fuse") {
+        Component(MAE, "MAE Compressor", "autofm.model.compress", "Learned per-ROP representation + anomaly score")
+        Component(GAT, "Topology GAT", "autofm.model.gat", "Graph-attention fusion; attention = causal chain")
+    }
+
+    Boundary(DECIDE, "Forecast & Decide") {
+        Component(PATCHTST, "PatchTST Backbone", "autofm.model.classifier", "Patch-based temporal attention")
+        Component(HEADS, "Multi-task Heads", "autofm.model.heads", "Evidential fault type, localization, time-to-failure")
+    }
+
+    Boundary(CALIBRATE, "Calibrate") {
+        Component(CONFORMAL, "Conformal Calibration", "autofm.model.conformal", "Coverage-guaranteed prediction sets")
+    }
 }
 
 System(ADVISORY, "Advisory Layer", "Correlates the calibrated prediction into a ranked advisory")
@@ -29,7 +47,7 @@ Rel_D(MAE, GAT, "latent")
 Rel_D(GAT, PATCHTST, "fused embeddings")
 Rel_D(PATCHTST, HEADS, "window feature")
 Rel_D(HEADS, CONFORMAL, "class scores")
-Rel_D(CONFORMAL, ADVISORY, "calibrated prediction")
+Rel_D(CONFORMAL, ADVISORY, "calibrated prediction + coverage set")
 
 Lay_R(TELEMETRY, ALARMS)
 @enduml
