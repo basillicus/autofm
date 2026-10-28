@@ -17,6 +17,9 @@ clf_epochs: 50
 clf_head: "evidential"   # "softmax" (baseline) | "evidential" (adds uncertainty)
 clf_backbone: "patchtst" # "transformer" | "patchtst" (patch-based)
 patch_size: 5            # patch length for the patchtst backbone
+use_gat: true            # GAT topology fusion between compress + classify
+use_conformal: true      # calibrate 95% conformal coverage sets on the val slice
+advisory: true           # build FM/PM/CM advisory from the model's real prediction
 
 # GPU knobs (from Task 2):
 amp: true

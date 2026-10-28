@@ -28,6 +28,9 @@ clf_epochs: 12
 clf_head: "softmax"       # "softmax" (baseline) | "evidential" (adds uncertainty)
 clf_backbone: "transformer"  # "transformer" | "patchtst" (patch-based)
 patch_size: 5             # patch length for the patchtst backbone
+use_gat: false            # GAT topology fusion between compress + classify
+use_conformal: false      # calibrate 95% conformal coverage sets on the val slice
+advisory: false           # build FM/PM/CM advisory from the model's real prediction
 
 # ---- Reproducibility ----
 seed: 42
