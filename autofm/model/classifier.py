@@ -207,6 +207,22 @@ class TemporalClassifier:
         return out.argmax(dim=1).numpy()
 
     @torch.no_grad()
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """Return (N, K) class probabilities.
+
+        Softmax head -> softmax of the logits; evidential head -> the Dirichlet
+        expected probabilities ``alpha / S``. Enables threshold-free ranking
+        metrics (ROC-AUC / PR-AUC) and calibration scores downstream.
+        """
+        if len(X) == 0:
+            return np.empty((0, self.n_classes), dtype=np.float32)
+        out = self._forward_all(X)
+        if self.head == "evidential":
+            alpha = evidence_to_alpha(out)
+            return dirichlet_probs(alpha).numpy().astype(np.float32)
+        return torch.softmax(out, dim=1).numpy().astype(np.float32)
+
+    @torch.no_grad()
     def predict_with_uncertainty(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return (class predictions, per-sample uncertainty in [0, 1]).
 

@@ -1,331 +1,194 @@
-# autofm - Fault Management System Design
+<div align="center">
 
-**Autonomous Fault Management for Open RAN**
+# autofm - System Design
 
-Team AFM_Ericsson · European AI Hackathon 2026
+### Predict network faults before they cause outages.
 
----
+**Autonomous Fault Management for 5G Open RAN** · Team AFM_Ericsson · European AI Hackathon 2026
 
-## Table of contents
-
-1. [Problem](#1-problem)
-2. [Vision](#2-vision)
-3. [The autofm approach](#3-the-autofm-approach)
-4. [System overview](#4-system-overview)
-5. [Inference flow](#5-inference-flow)
-6. [Model architecture](#6-model-architecture)
-7. [FM / PM / CM and the Analysis Bus](#7-fm--pm--cm-and-the-analysis-bus)
-8. [Project structure](#8-project-structure)
-9. [Tech stack](#9-tech-stack)
-10. [Evaluation](#10-evaluation)
-11. [Timeline (Oct 6-29)](#11-timeline-oct-6-29)
-
-- [Terminology](#terminology)
+</div>
 
 ---
 
-## Terminology
+## Summary
 
-| Term | Meaning |
-|------|---------|
-| **O-RAN** | Open Radio Access Network - a disaggregated, multi-vendor RAN architecture with open interfaces. |
-| **RAN** | Radio Access Network - the radio-side layer (cells, carriers, connected UEs, bitrate, signal quality). |
-| **gNB** | 5G NR base station (`ManagedElement`); hosts the CU, DU and transport functions. |
-| **GNBDUFunction** | Distributed-unit function of a gNB; parents NRCellDU and NRSectorCarrier. |
-| **GNBCUCPFunction** | Centralized-unit control-plane function; parents NRCellCU. |
-| **GNBCUUPFunction** | Centralized-unit user-plane function; parents the user-plane transport links (S1-U in NSA/EN-DC; Rp is implementation-specific). |
-| **NRCellDU / NRCellCU** | Distributed- and centralized-unit views of an NR cell. |
-| **NRSectorCarrier** | Carrier served by a cell (power, downtime). |
-| **Transport link** | User-plane bearers under the CU-UP: S1ULink (NSA/EN-DC S1-U) and RpUserPlaneLink (implementation-specific). |
-| **Cell** | An NR cell; the CU/DU/SectorCarrier triple for one radio sector. |
-| **UE** | User Equipment - an end device connected to the RAN. |
-| **PM / CM** | Performance- and Configuration-Management counter/attribute data. |
-| **ROP** | Recording Output Period - the 15-minute counter aggregation interval. |
-| **FM** | Fault Management - predict, diagnose, and warn about faults (Phase 1). |
-| **PM (pillar)** | Performance Management - measure KPI impact and SLA risk. |
-| **CM (pillar)** | Configuration Management - suggest and rank config actions. |
-| **KPI** | Key Performance Indicator - a measured network performance metric. |
-| **SLA** | Service Level Agreement - a committed service quality threshold. |
-| **TTF** | Time-To-Failure - predicted ROPs until a fault label flips. |
-| **Causal path / chain** | The ordered sequence of nodes along which a fault propagates. |
-| **Degradation ramp** | The window of subtle warning signs before a fault label flips. |
-| **Analysis Bus** | Shared central queue where FM/PM/CM publish outputs for cross-pillar correlation. |
-| **Correlation Engine** | Consumer of the Analysis Bus that correlates signals across pillars. |
-| **MAE** | Masked Autoencoder - self-supervised nonlinear representation learning. |
-| **GAT** | Graph Attention Network - topology-aware fusion over the network graph. |
-| **PatchTST** | Patch-based Transformer for time-series - the temporal attention backbone. |
-| **PCA** | Principal Component Analysis - linear dimensionality reduction (baseline). |
-| **LSTM** | Long Short-Term Memory - recurrent sequence model (baseline). |
-| **RF** | Random Forest - ensemble tree classifier (baseline). |
-| **Evidential DL** | Evidential Deep Learning - predicts a Dirichlet distribution giving classification plus uncertainty. |
-| **Aleatoric uncertainty** | Uncertainty from inherent data noise (irreducible). |
-| **Epistemic uncertainty** | Uncertainty from the model/limited data (reducible). |
-| **Conformal Prediction** | Distribution-free, model-agnostic wrapper giving calibrated coverage sets. |
-| **Coverage** | The target fraction the prediction set is calibrated to contain the true label (e.g., 95%); exact under exchangeability, approximate under temporal drift. |
-| **OU-like** | Ornstein-Uhlenbeck - mean-reverting autocorrelation observed in the counter time-series. |
-| **Horizon (m)** | Forecast lead time in ROPs (e.g., m=5 to 120). |
-| **Checkpoint** | Saved trained model weights. |
-| **HPO** | Hyperparameter Optimization - automated hyperparameter search (Ray Tune / Optuna). |
-| **DDP** | Distributed Data Parallel - PyTorch multi-GPU/multi-node training. |
-| **falcon** | Baseline track (PCA + LSTM + RF), compared against the autofm FM track. |
+A single fault in a virtualized Open RAN network does not stay in one place. A
+host CPU throttling under a thermal spike degrades its containers, then the cells
+they serve - surfacing minutes later as packet loss that a radio-only monitor
+blames on the radio. By the time a reactive tool fires, the outage has happened.
+
+**`autofm` turns fault management from reactive to predictive.** It reads
+telemetry across all three deployment levels at once, learns a fault's signature
+*as it builds*, and raises a calibrated advisory **before impact**:
+
+> **what** will fail · **where** it originates · **when** · **why** (causal
+> path) · **what to do**.
+
+| Document | For |
+|----------|-----|
+| **This doc** | The design pitch: problem, approach, model, GPU scale, evaluation. |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | C4 architecture views and quality attributes. |
+| [`DATASET_SPEC.md`](DATASET_SPEC.md) | Dataset overview - what it is and why it matters (short). |
+| [`DATASET_REFERENCE.md`](DATASET_REFERENCE.md) | Full data schema, topology, labeling + ML pipeline contract. |
 
 ---
 
-## 1. Problem
+## What makes autofm different
 
-O-RAN's disaggregated architecture spreads a single fault across levels: a fault
-can originate at the **transport** layer (CU-UP user-plane links), manifest at
-the **radio** layer (DU/carrier), and surface as a **service** symptom (CU
-mobility and accessibility) - causing cross-level misdiagnosis. Reactive,
-single-level monitoring mislabels the cause.
-
-**autofm predicts faults before they occur, and identifies where, when, why, and
-what to do about it.**
-
----
-
-## 2. Vision
-
-A machine-learning framework for network management. FM is Phase 1; the same
-core extends to PM and CM.
-
-| Pillar | Role | Phase |
-|--------|------|-------|
-| **FM** | Predict + diagnose + warn | Phase 1 (in build) |
-| **PM** | Measure KPI impact + SLA risk | Designed for |
-| **CM** | Suggest + rank config actions | Designed for |
+| | Conventional monitoring | **autofm** |
+|---|-------------------------|------------|
+| **Timing** | Reactive - after the fault | **Predictive** - ahead of impact |
+| **Scope** | Single level | **Multi-level** - infra + platform + RAN fused |
+| **Output** | "An alarm occurred" | **What / where / when / why / action** |
+| **Trust** | Binary alarm | **Calibrated uncertainty + coverage guarantee** |
+| **Explainability** | Operator investigates | **Causal chain** from graph attention |
+| **Scale** | Per-site rule tuning | **GPU-accelerated** across the fleet (4× A100, DDP) |
 
 ---
 
-## 3. The autofm approach
+## The problem
 
-| Stage | autofm | Rationale |
-|-------|--------|-----------|
-| **Representation** | Masked Autoencoder (nonlinear, self-supervised) | Captures cross-level coupling |
-| **Temporal model** | PatchTST (parallel, interpretable) | GPU-friendly, attention-based |
-| **Topology** | Graph Attention Network | Enables localization + causality |
-| **Classification** | Evidential Deep Learning (joint) | Uncertainty + end-to-end training |
-| **Calibration** | Conformal Prediction | Distribution-free, calibrated coverage |
-| **Output** | Type + location + TTF + cause + action | Complete advisory |
+Open RAN disaggregates the base station into containers on shared
+infrastructure, so **one fault expresses itself across every level at once** -
+and the symptom and the root cause live on different levels:
+
+- **Infrastructure** - host (CPU, memory, temperature, power)
+- **Platform** - CU / DU network-function containers
+- **RAN** - cells, carriers, user-plane transport
+
+A radio-only monitor sees the symptom (packet loss) and blames the radio - the
+wrong layer. `autofm` observes all levels jointly and predicts the fault ahead
+of impact, with its true origin.
 
 ---
 
-## 4. System overview
+## Approach
 
-The pipeline ingests multi-level 5G NR PM/CM counters over a 3GPP-aligned
-topology (gNB → CU/DU/SectorCarrier + transport), compresses them, forecasts
-their trajectory, and classifies the resulting state into a fault advisory. The
-dataset, its schema, and the default/full scale are defined in the dataset
-specification (DS §4 schema, §5 topology/scale).
-
-> **Diagram 1**
+Multi-level telemetry flows through five specialized stages into a calibrated
+advisory:
 
 ```mermaid
 flowchart LR
-    subgraph TELE["Multi-level RAN telemetry (PM/CM)"]
-        RADIO["Radio<br/>(NRCellDU / SectorCarrier)"]
-        SVC["Service<br/>(NRCellCU)"]
-        TRANS["Transport<br/>(S1U / Rp links)"]
-    end
-
-    TELE --> DG["PM/CM dataset<br/><i>pm* counters over gNB topology</i>"]
-    DG --> MAE["MAE<br/><i>nonlinear representation</i>"]
-    MAE --> GAT["GAT<br/><i>topology-aware fusion</i>"]
+    TELE["Multi-level telemetry<br/><i>infra · platform · RAN</i>"] --> MAE["MAE<br/><i>representation</i>"]
+    MAE --> GAT["GAT<br/><i>topology fusion</i>"]
     GAT --> PTST["PatchTST<br/><i>temporal attention</i>"]
-    PTST --> HEADS["Multi-task evidential heads<br/><i>type · location · TTF · cause</i>"]
-    HEADS --> CP["Conformal Prediction<br/><i>calibrated coverage sets</i>"]
-    CP --> ADV["Advisory output<br/>type · location · TTF · cause · action"]
+    PTST --> HEADS["Evidential heads<br/><i>type · location · TTF · cause</i>"]
+    HEADS --> CP["Conformal<br/><i>coverage sets</i>"]
+    CP --> ADV["Advisory<br/>what · where · when · why · action"]
 ```
 
----
+| Stage | Choice | Why |
+|-------|--------|-----|
+| Representation | Masked Autoencoder | Nonlinear cross-level coupling; reconstruction error = anomaly score |
+| Topology fusion | Graph Attention Network | Propagates signal along the graph; attention = causal chain |
+| Temporal model | PatchTST | Parallel, attention-based, efficient on long sequences |
+| Classification | Evidential Deep Learning | Prediction **and** uncertainty in one pass |
+| Calibration | Conformal Prediction | Distribution-free, guaranteed coverage |
 
-## 5. Inference flow
-
-> **Diagram 2**
-
-```mermaid
-flowchart TD
-    A["Live telemetry window<br/>(T ROPs × per-cell counters)"] --> B["MAE encoder<br/>→ latent + anomaly score"]
-    B --> C["GAT fusion<br/>over network topology"]
-    C --> D["PatchTST backbone<br/>patch embed + Transformer"]
-    D --> E1["Fault-type head<br/>(evidential Dirichlet)"]
-    D --> E2["Localization head<br/>(per-node softmax)"]
-    D --> E3["TTF head<br/>(quantile 0.1 / 0.5 / 0.9)"]
-    D --> E4["Causal-chain head<br/>(GAT attention trace)"]
-    E1 --> F["Conformal wrapper<br/>→ 95% coverage set"]
-    E2 --> G
-    E3 --> G
-    E4 --> G
-    F --> G["Advisory:<br/>what · where · when · why · action"]
-```
+Four heads share the backbone and produce the full advisory in one forward pass:
+**fault type** (with uncertainty), **localization** (origin node), **TTF**
+(quantile lead time), and **causal chain** (GAT attention trace). See
+[`ARCHITECTURE.md`](ARCHITECTURE.md) for the component-level view.
 
 ---
 
-## 6. Model architecture
+## Product vision
 
-### MAE - nonlinear representation learning
+One learning core, one analysis fabric, three management domains:
 
-Self-supervised pretraining: mask 30-50% of counters and reconstruct. 1D-Conv
-encoder (D → 64 → 32 → **latent dim 32**). Learns nonlinear cross-level
-relationships. Reconstruction error doubles as an anomaly score. A linear
-projection lifts the 32-dim latent to the model width (128) at the GAT input.
+| Domain | Role | This release |
+|--------|------|--------------|
+| **FM** | Predict, localize, explain faults | Full predictive pipeline |
+| **PM** | KPI impact + SLA breach risk | Advisory integration |
+| **CM** | Rank corrective actions | Advisory integration |
 
-### GAT - topology-aware fusion
-
-Multi-head graph attention (4 heads, 2 layers) over the network topology,
-operating at width 128. Each node's embedding is enriched by its neighbours.
-Attention weights expose the causal chain directly.
-
-### PatchTST - temporal attention backbone
-
-Patch embedding over a 60-ROP window (`patch_size=5` → 12 patches, integer by
-construction), Transformer encoder (4 layers, 4 heads, `embed_dim=128`).
-Parallelizable on GPU and interpretable via attention; a well-established
-architecture for time-series forecasting.
-
-### Multi-task evidential heads
-
-Four parallel heads on the shared backbone:
-
-| Head | Task | Method | Output |
-|------|------|--------|--------|
-| **Fault type** | Classification | Evidential DL (Dirichlet) | Class + aleatoric/epistemic uncertainty |
-| **Localization** | Node classification | Per-node softmax | Origin-node ranking |
-| **Time-to-failure** | Regression | Quantile (tau = 0.1, 0.5, 0.9) | Median + 80% interval |
-| **Causal chain** | Structured | GAT attention trace | Ordered node path |
-
-### Conformal Prediction
-
-Post-hoc wrapper. Distribution-free and model-agnostic. Produces **calibrated**
-coverage sets at a nominal level (e.g., 95%); coverage is exact under
-exchangeability and approximate under the temporal split used here (dataset spec
-§12.1).
+Each domain publishes to a shared **Analysis Bus**; a **Correlation Engine**
+fuses them into one ranked advisory. *Example:* FM predicts transport packet loss
+on a link under `GNB001`; PM projects an SLA breach; CM proposes re-homing the
+bearer → *"Re-home the user-plane bearer off the degrading link. Confidence ≈ 0.9."*
 
 ---
 
-## 7. FM / PM / CM and the Analysis Bus
+## GPU acceleration & scale
 
-FM, PM, and CM each produce structured outputs. Rather than forming a closed
-loop between them, all three **publish their data to a shared Analysis Bus** - a
-central queue where cross-pillar correlation and analysis happens. The outcome
-of the Analysis Bus is a detailed, calculated analysis presented as suggestions
-for operators or upstream systems to act on.
+Fleet-scale fault prediction is a GPU problem - hundreds of cells, thousands of
+counters, sampled every 15 minutes over months. The same code runs on a laptop
+and scales to a multi-GPU node:
 
-> **Diagram 3**
+- **Distributed training** - the representation stage trains under PyTorch DDP
+  across **4× A100** via `torchrun`; single-process fallback on CPU / Apple MPS.
+- **Mixed precision** - AMP (fp16 Tensor Cores) and TF32, gated to CUDA so the
+  laptop path is unaffected.
+- **Measured, not assumed** - a benchmark times steady-state throughput
+  (`cuda.synchronize`-bracketed) and reports scaling efficiency
+  = throughputₙ / (N × throughput₁). NVTX ranges feed an NVIDIA Nsight timeline.
 
-```mermaid
-flowchart TD
-    FM["FM<br/>fault predictions<br/>(type · location · TTF · causal chain)"] --> BUS["Analysis Bus<br/><i>shared queue</i>"]
-    PM["PM<br/>KPI impact + SLA breach risk"] --> BUS
-    CM["CM<br/>candidate config actions + outcomes"] --> BUS
-    BUS --> CE["Correlation Engine<br/><i>cross-pillar correlation</i>"]
-    CE --> OUT["Unified analysis<br/>ranked suggestions"]
-    OUT --> OP["Operator / agentic system"]
-```
-
-**How it works:**
-
-- **FM** publishes fault predictions (type, location, TTF, causal chain) to the
-  bus.
-- **PM** publishes KPI impact assessments and SLA breach risk projections to the
-  bus.
-- **CM** publishes candidate config actions with estimated outcomes to the bus.
-- The **Analysis Bus** aggregates all three streams. The **Correlation Engine**
-  consumes from the bus and correlates across pillars - e.g., linking an FM
-  fault prediction to a PM SLA breach to the CM actions that would resolve it.
-- The output is a unified, calculated analysis with ranked suggestions delivered
-  to the operator or an agentic system.
-
-**Phase 1 (this hackathon):** FM is fully built. PM and CM are rule-based
-advisory stubs. The Analysis Bus is demonstrated with a worked example showing
-the cross-pillar correlation.
-
-**Example** (identifiers illustrative): FM predicts a **transport Packet-Loss**
-fault on `RpUserPlaneLink` under gNB `GNB001`, 3 ROPs ahead. PM projects an SLA
-breach on cell `GNB001-1` within 6 ROPs. CM generates three candidate actions.
-The Analysis Bus correlates all three and presents:
-
-> "Re-home the user-plane bearer off the degrading link - clears the predicted
-> fault, prevents the SLA breach, confidence ~0.9 (illustrative)."
+A CUDA driver/runtime preflight check surfaces version mismatches as clear
+messages instead of opaque multi-rank NCCL failures. Details:
+[`PROFILING.md`](PROFILING.md), [`ARCHITECTURE.md` §6-§7](ARCHITECTURE.md#6-deployment-view).
 
 ---
 
-## 8. Project structure
+## Evaluation
 
-```mermaid
-flowchart LR
-    ROOT["autofm/ (repo root)"]
+**Leakage-safe by design.** Chronological 60 / 20 / 20 split (validation and test
+strictly after training) plus a held-out conformal calibration slice. Alarms are
+labels only, never features; a window is positive only if a fault *onsets* within
+the horizon - genuine prediction, not detection. Full contract:
+[`DATASET_REFERENCE.md` §10](DATASET_REFERENCE.md#10-feature--ml-pipeline-contract).
 
-    ROOT --> CFG["config.yaml<br/><i>all hyperparameters</i>"]
-    ROOT --> REQ["requirements.txt"]
-    ROOT --> FALCON["falcon/<br/><i>baseline track</i>"]
-    ROOT --> PKG["autofm/<br/><i>FM track (full architecture)</i>"]
-    ROOT --> DATA["data/<br/><i>gitignored</i>"]
-    ROOT --> ART["artifacts/<br/><i>gitignored</i>"]
-    ROOT --> SCRIPTS["scripts/<br/><i>build_data · run_sweep · run_horizon_test</i>"]
+Because the task is imbalanced toward Normal, success is **macro-F1 / per-class
+recall / PR-AUC**, not accuracy.
 
-    FALCON --> FMOD["ingestion · preprocess · reduce<br/>forecast · classify · pipeline"]
-
-    PKG --> DGEN["datagen/<br/><i>topology · counters · labels</i>"]
-    PKG --> MODEL["model/<br/><i>mae · gat · patchtst · heads · evidential · conformal</i>"]
-    PKG --> ADV["advisory/<br/><i>pm_stub · cm_stub</i>"]
-    PKG --> PIPE["pipeline/<br/><i>pretrain · train · evaluate · infer</i>"]
-```
-
----
-
-## 9. Tech stack
-
-**Core:** Python 3.14+, PyTorch >= 2.10, PyTorch Geometric, NumPy, Pandas,
-scikit-learn, SciPy, XGBoost, MAPIE, matplotlib, networkx.
-
-**GPU / scale-out:** CUDA 12.x, Ray Tune / Optuna, TensorBoard, NVIDIA Nsight,
-PyTorch DDP.
+| Metric | Target |
+|--------|--------|
+| Fault-type macro-F1 | Materially above majority-class & linear baselines |
+| Per-class recall | Balanced across fault classes |
+| PR-AUC (fault vs. Normal) | High precision at useful recall |
+| Localization top-k | Correct origin within top-k for most faults |
+| TTF RMSE (ROPs) | Low error within the degradation ramp |
+| Conformal coverage | At/above nominal (e.g. 95%) |
+| Horizon curve (5→120 ROPs) | Graceful decay, useful at long lead |
 
 ---
 
-## 10. Evaluation
+## Delivery roadmap
 
-**Data split:** Chronological (60% train / 20% val / 20% test), val/test strictly
-after train, with a held-out calibration slice for conformal prediction. No
-future leakage. See the dataset spec (§12) for the full pipeline contract.
-
-**Tests:** Unit (pytest), integration (end-to-end shape checks), regression
-(baseline holds), ablation (with/without each component), horizon degradation
-(m = 5 to 120 ROPs), robustness (counter dropout, noise).
-
-**Target metrics** (fault-type scored by macro-F1 given class imbalance, not
-raw accuracy):
-
-| Metric | Baseline (falcon) | autofm target |
-|--------|-------------------|---------------|
-| Fault-type macro-F1 (m=5) | TBD | high |
-| Fault-type macro-F1 (m=30) | N/A | moderate-high |
-| Localization top-k accuracy | N/A | high |
-| TTF RMSE (ROPs) | N/A | low |
-| Inference latency | N/A | target set after baseline |
-| Conformal coverage | N/A | nominal level (design parameter), empirically validated |
-
-Targets are set relative to the `falcon` baseline once it runs on the dataset,
-rather than stated as absolute figures in advance. The conformal nominal
-coverage level is a design parameter; realised coverage is validated
-empirically and is approximate under the temporal split (dataset spec §12.1).
+| Milestone | Deliverable |
+|-----------|-------------|
+| **Foundation** | Multi-level pipeline; MAE + temporal classifier end to end |
+| **Explainability & uncertainty** | GAT localization + causal chain; TTF head; evidential + conformal |
+| **Advisory & scale** | FM/PM/CM correlation; multi-GPU training + benchmarking; horizon & ablation |
 
 ---
 
-## 11. Timeline (Oct 6-29)
+## Stack & structure
 
-| Date | Deliverable |
-|------|-------------|
-| Oct 6-7 | Repo setup, baseline running |
-| Oct 8-10 | Data pipeline complete (topology, dynamics, fault model, labels) |
-| Oct 11-13 | MAE + PatchTST + fault-type head. Mentor update. |
-| Oct 14-16 | GAT + localization + TTF heads |
-| Oct 17-19 | Evidential DL + conformal calibration |
-| Oct 20-22 | HPO sweep + horizon test |
-| Oct 23-25 | FM/PM/CM advisory loop |
-| Oct 26-29 | Polish, ablation, demo, final submission |
+**Stack:** Python 3.14 · PyTorch (+ DDP) · PyTorch Geometric · scikit-learn ·
+MAPIE · NumPy / Pandas / SciPy · NVIDIA Nsight. PyG and MAPIE are optional
+accelerators with built-in fallbacks, so the system never fails on a missing
+package.
+
+**Structure:** `autofm/{data, model, advisory}` plus entry points
+`pipeline · train_mae · bench · profile_dataset`. Full layout and C4 views:
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---
 
-Team AFM_Ericsson - European AI Hackathon 2026
+## Glossary
+
+**ROP** 15-min counter interval · **gNB** 5G base station · **MAE** masked
+autoencoder · **GAT** graph attention network · **PatchTST** patch-based
+Transformer · **Evidential DL** Dirichlet classifier giving a prediction +
+uncertainty · **Conformal** distribution-free calibrated coverage sets ·
+**TTF** time-to-failure · **DDP** PyTorch multi-GPU training · **AMP/TF32** GPU
+mixed-precision on Ampere. Domain and schema detail:
+[`DATASET_REFERENCE.md`](DATASET_REFERENCE.md).
+
+---
+
+<div align="center">
+
+**Team AFM_Ericsson** · European AI Hackathon 2026
+
+</div>
