@@ -20,6 +20,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from sklearn.metrics import classification_report
 from autofm.data.features import prepare
 from autofm.data.labels import CLASS_NAMES, label_frame, load_alarms
 from autofm.data.loader import load
+from autofm.metrics import compute_all, format_summary, write_prometheus
 from autofm.model.classifier import TemporalClassifier
 from autofm.model.compress import build_compressor
 
@@ -107,10 +109,19 @@ def run(cfg: dict) -> dict:
     )
     clf.fit(Ztr, prep.train.y_class, Zval, prep.val.y_class)
 
-    # Final test metrics (+ uncertainty for the evidential head).
-    pred, unc = clf.predict_with_uncertainty(Zte)
-    test_f1 = clf.macro_f1(Zte, prep.test.y_class)
+    # Final test metrics. One forward pass: get probabilities, derive the class
+    # prediction and uncertainty from them, so pred / proba / metrics are all
+    # consistent and we don't re-run the net three times.
+    proba = clf.predict_proba(Zte)
+    _, unc = clf.predict_with_uncertainty(Zte)
+    pred = (proba.argmax(axis=1) if len(proba)
+            else np.empty(0, dtype=np.int64))
     mean_unc = float(unc.mean()) if len(unc) else float("nan")
+
+    metrics = compute_all(
+        prep.test.y_class, pred, CLASS_NAMES, proba=proba, uncertainty=unc,
+    )
+    test_f1 = metrics["multiclass"]["macro_f1"]
     present = sorted(set(prep.test.y_class) | set(pred))
     report = classification_report(
         prep.test.y_class, pred,
@@ -121,18 +132,56 @@ def run(cfg: dict) -> dict:
 
     unc_label = ("mean uncertainty" if head == "evidential"
                  else "mean confidence-gap")
+    bf = metrics["binary_fault"]
     print("\n" + "=" * 64)
     print(f"autofm FM pipeline - TEST macro-F1 = {test_f1:.4f}  "
           f"(compressor={cfg['compressor']}, backbone={backbone}, "
           f"head={head}, horizon={cfg['horizon']})")
     print(f"{unc_label}: {mean_unc:.4f}")
     print("=" * 64)
+    print(format_summary(metrics, CLASS_NAMES))
+    print("\nPer-class report:")
     print(report)
     print(f"Total wall time: {elapsed:.1f}s on device "
           f"{getattr(clf, 'device', 'cpu')}")
 
-    return {"test_macro_f1": test_f1, "mean_uncertainty": mean_unc,
-            "elapsed_sec": elapsed}
+    # Optional machine-readable metrics dump for tracking across runs.
+    metrics_out = cfg.get("metrics_out")
+    if metrics_out:
+        payload = dict(metrics)
+        payload["config"] = {k: cfg[k] for k in (
+            "compressor", "clf_backbone", "clf_head", "horizon", "window_k",
+            "latent_dim", "max_days", "max_gnbs") if k in cfg}
+        payload["elapsed_sec"] = round(elapsed, 1)
+        out_path = Path(metrics_out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(payload, indent=2))
+        print(f"[metrics] wrote {out_path}")
+
+    # Optional Prometheus exposition file (node_exporter textfile collector).
+    prom_out = cfg.get("prom_out")
+    if prom_out:
+        prom_labels = {
+            "compressor": str(cfg.get("compressor", "")),
+            "backbone": str(cfg.get("clf_backbone", "")),
+            "head": str(head),
+            "horizon": str(cfg.get("horizon", "")),
+        }
+        write_prometheus(prom_out, metrics, prom_labels)
+        print(f"[metrics] wrote Prometheus exposition -> {prom_out}")
+
+    result = {"test_macro_f1": test_f1, "mean_uncertainty": mean_unc,
+              "elapsed_sec": elapsed}
+    result.update({
+        "weighted_f1": metrics["multiclass"]["weighted_f1"],
+        "balanced_accuracy": metrics["multiclass"]["balanced_accuracy"],
+        "fault_recall": bf["recall"],
+        "fault_precision": bf["precision"],
+        "fault_pr_auc": bf.get("pr_auc"),
+        "fault_roc_auc": bf.get("roc_auc"),
+        "metrics": metrics,
+    })
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -146,6 +195,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="Override the temporal backbone from config.")
     ap.add_argument("--max-days", type=int, default=None)
     ap.add_argument("--max-gnbs", type=int, default=None)
+    ap.add_argument("--metrics-out", default=None,
+                    help="Write the full metrics bundle as JSON to this path.")
+    ap.add_argument("--prom-out", default=None,
+                    help="Write Prometheus exposition metrics (.prom) to this "
+                         "path for the node_exporter textfile collector.")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -159,6 +213,10 @@ def main(argv: list[str] | None = None) -> int:
         cfg["max_days"] = args.max_days
     if args.max_gnbs is not None:
         cfg["max_gnbs"] = args.max_gnbs
+    if args.metrics_out is not None:
+        cfg["metrics_out"] = args.metrics_out
+    if args.prom_out is not None:
+        cfg["prom_out"] = args.prom_out
 
     run(cfg)
     return 0
