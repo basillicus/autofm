@@ -27,10 +27,11 @@ System_Ext(AUTOMATION, "Automation System", "Closed-loop remediation")
 Rel_D(TELEMETRY, AUTOFM, "streams counters", "CSV")
 Rel_D(ALARMS, AUTOFM, "provides labels", "CSV")
 
-' engineer to the left, training platform to the right (neighbor placement;
-' short labels keep neighbor edges uncrowded)
-Rel_Neighbor(ENGINEER, AUTOFM, "operates", "CLI")
-Rel_Neighbor(AUTOFM, HPC, "trains on", "NCCL")
+' engineer to the left, training platform to the right (neighbor placement).
+' No tech annotation on these horizontal edges - a second label line collides
+' with the adjacent boxes when they sit close.
+Rel_Neighbor(ENGINEER, AUTOFM, "operates")
+Rel_Neighbor(AUTOFM, HPC, "trains on")
 
 ' advisory consumers below
 Rel_D(AUTOFM, OPERATOR, "delivers advisory")
