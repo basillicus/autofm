@@ -209,59 +209,15 @@ def _as_batch(x: torch.Tensor) -> tuple[torch.Tensor]:
 # --------------------------------------------------------------------------- #
 # Training
 # --------------------------------------------------------------------------- #
-def train(cfg: dict, bench_out: str | None = None) -> None:
-    rank, local_rank, world_size, is_distributed = _dist_info()
-    device = _setup(is_distributed, local_rank)
+def fit_mae_rows(cfg: dict, train_rows: WindowRows, device: torch.device,
+                 ctx: tuple, log, bench_out: str | None = None) -> _MAENet:
+    """Train the MAE on every step of every train window, read through the
+    per-ROP rows. DDP when ``ctx`` says so; returns the trained core network.
+
+    ``ctx`` is ``(rank, local_rank, world_size, is_distributed, is_cuda)``.
+    """
+    rank, local_rank, world_size, is_distributed, is_cuda = ctx
     is_main = rank == 0
-    is_cuda = device.type == "cuda"
-
-    def log(*a):
-        if is_main:
-            print(*a, flush=True)
-
-    # TF32 (Ampere+); harmless elsewhere.
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.manual_seed(cfg["seed"])
-
-    # ---- Data --------------------------------------------------------------
-    # The MAE trains on every step of every train window. Windows overlap, so
-    # it reads them through the per-ROP rows instead of k materialised copies.
-    # Default: every rank prepares the same slice. With data_cache set (and
-    # DDP), rank 0 prepares once and the other ranks load its train rows.
-    cache = None
-    if is_distributed and cfg.get("data_cache"):
-        tag = f"{os.environ.get('SLURM_JOB_ID', 'local')}-{os.environ.get('MASTER_PORT', '0')}"
-        cache = Path(cfg["data_cache"]) / f"mae-train-{tag}.npz"
-
-    prep = None
-    if cache is None or is_main:
-        log(f"[data] loading telemetry (max_days={cfg['max_days']}, "
-            f"max_gnbs={cfg['max_gnbs']}) ...")
-        d = load(cfg["dataset_root"], max_days=cfg["max_days"], max_gnbs=cfg["max_gnbs"])
-        labeled = label_frame(
-            d.frame,
-            load_alarms(str(Path(cfg["dataset_root"]) / "alarms" / "alarms.csv")),
-            horizon=cfg["horizon"],
-        )
-        prep = prepare_rows(labeled, d.feature_cols, k=cfg["window_k"])
-        del d, labeled
-        train_rows: WindowRows = prep.train
-    if cache is not None:
-        if is_main:
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            tmp = cache.with_name(cache.name + ".tmp")
-            with open(tmp, "wb") as fh:
-                np.savez(fh, rows=train_rows.rows, starts=train_rows.starts)
-            os.replace(tmp, cache)
-            log(f"[data] shared train rows via {cache}")
-        else:
-            # Poll instead of a collective: preparing can outlast NCCL timeouts.
-            while not cache.exists():
-                time.sleep(5)
-            with np.load(cache) as z:
-                train_rows = WindowRows(z["rows"], z["starts"], cfg["window_k"],
-                                        None, None, None)
     dataset = _WindowStepRows(train_rows.rows, train_rows.starts, train_rows.k)
     in_dim = train_rows.rows.shape[1]
     log(f"[data] train rows {len(dataset)} ({len(train_rows.rows)} distinct), "
@@ -298,7 +254,9 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
     if num_workers < req_workers:
         log(f"[data] capping num_workers {req_workers} -> {num_workers} "
             f"(CPUs available: {cpu_budget})")
-    batch_size = cfg.get("batch_size", 512)
+    # mae_batch_size lets the full pipeline use a big MAE batch without
+    # changing the classifier batch.
+    batch_size = cfg.get("mae_batch_size", cfg.get("batch_size", 512))
     gpu_data = bool(cfg.get("gpu_data", False)) and is_cuda
     loader = None if gpu_data else DataLoader(
         dataset, batch_size=batch_size,
@@ -403,9 +361,70 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
         _write_bench(bench_out, step_ms, local_batch, world_size,
                      is_distributed, device, is_main, log)
 
+
+    return net.module if is_distributed else net
+
+
+def train(cfg: dict, bench_out: str | None = None) -> None:
+    rank, local_rank, world_size, is_distributed = _dist_info()
+    device = _setup(is_distributed, local_rank)
+    is_main = rank == 0
+    is_cuda = device.type == "cuda"
+
+    def log(*a):
+        if is_main:
+            print(*a, flush=True)
+
+    # TF32 (Ampere+); harmless elsewhere.
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.manual_seed(cfg["seed"])
+
+    # ---- Data --------------------------------------------------------------
+    # The MAE trains on every step of every train window. Windows overlap, so
+    # it reads them through the per-ROP rows instead of k materialised copies.
+    # Default: every rank prepares the same slice. With data_cache set (and
+    # DDP), rank 0 prepares once and the other ranks load its train rows.
+    cache = None
+    if is_distributed and cfg.get("data_cache"):
+        tag = f"{os.environ.get('SLURM_JOB_ID', 'local')}-{os.environ.get('MASTER_PORT', '0')}"
+        cache = Path(cfg["data_cache"]) / f"mae-train-{tag}.npz"
+
+    prep = None
+    if cache is None or is_main:
+        log(f"[data] loading telemetry (max_days={cfg['max_days']}, "
+            f"max_gnbs={cfg['max_gnbs']}) ...")
+        d = load(cfg["dataset_root"], max_days=cfg["max_days"], max_gnbs=cfg["max_gnbs"])
+        labeled = label_frame(
+            d.frame,
+            load_alarms(str(Path(cfg["dataset_root"]) / "alarms" / "alarms.csv")),
+            horizon=cfg["horizon"],
+        )
+        prep = prepare_rows(labeled, d.feature_cols, k=cfg["window_k"])
+        del d, labeled
+        train_rows: WindowRows = prep.train
+    if cache is not None:
+        if is_main:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_name(cache.name + ".tmp")
+            with open(tmp, "wb") as fh:
+                np.savez(fh, rows=train_rows.rows, starts=train_rows.starts)
+            os.replace(tmp, cache)
+            log(f"[data] shared train rows via {cache}")
+        else:
+            # Poll instead of a collective: preparing can outlast NCCL timeouts.
+            while not cache.exists():
+                time.sleep(5)
+            with np.load(cache) as z:
+                train_rows = WindowRows(z["rows"], z["starts"], cfg["window_k"],
+                                        None, None, None)
+    in_dim = train_rows.rows.shape[1]
+    core = fit_mae_rows(cfg, train_rows, device,
+                        (rank, local_rank, world_size, is_distributed, is_cuda),
+                        log, bench_out)
+
     # ---- Checkpoint + eval (rank 0 only) -----------------------------------
     if is_main:
-        core = net.module if is_distributed else net
         out = Path(cfg.get("mae_ckpt", "artifacts/mae.pt"))
         out.parent.mkdir(parents=True, exist_ok=True)
         torch.save(

@@ -38,7 +38,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 
 from autofm import pipeline as pl
-from autofm.data.features import prepare
+from autofm.data.features import WindowRows, prepare, prepare_rows
 from autofm.data.labels import CLASS_NAMES, label_frame, load_alarms
 from autofm.data.loader import load
 from autofm.metrics import compute_all, format_summary, write_prometheus
@@ -52,6 +52,7 @@ from autofm.train_mae import (
     _dist_info,
     _setup,
     _write_bench,
+    fit_mae_rows,
 )
 from sklearn.metrics import classification_report
 
@@ -213,21 +214,36 @@ def _train_clf_ddp(cfg, Ztr, ytr, device, ctx, log) -> _TemporalEncoder:
     return net.module if is_distributed else net
 
 
+def _compress_rows(comp, w: WindowRows) -> np.ndarray:
+    """Latent windows ``(N, k, L)`` for one split, without materialising the
+    ``(N, k, F)`` input windows.
+
+    Both compressors map each ROP row on its own, so encoding every distinct
+    row once and gathering by window gives the same latents as
+    ``comp.transform(w.windows())`` at a fraction of the memory and compute.
+    """
+    z_rows = comp.transform(w.rows[:, None, :])[:, 0, :]
+    return z_rows[w.row_index()]
+
+
 # --------------------------------------------------------------------------- #
 # Rank-0 once-only tail: compress transforms, GAT, eval, conformal, advisory
 # --------------------------------------------------------------------------- #
-def _finish_rank0(cfg, prep, comp, clf_core, t0, log, gat=None) -> dict:
+def _finish_rank0(cfg, prep, comp, clf_core, t0, log, gat=None, Z=None) -> dict:
     """Run the deterministic tail on rank 0 and print/return results.
 
     ``comp`` is the already-fitted compressor (MAE wrapper or PCA); ``clf_core``
     is the DDP-trained classifier encoder. ``gat`` is the SAME (seed-fixed)
     GATFusion instance used to enrich the train split during training, reused
     here so eval sees an identical transform (no second random init).
+    ``Z`` optionally carries the already-compressed ``(train, val, test)``
+    latents (low-memory mode), so the splits are not compressed again.
     """
     # Compress all splits with the already-trained compressor.
-    Ztr = comp.transform(prep.train.X)
-    Zval = comp.transform(prep.val.X)
-    Zte = comp.transform(prep.test.X)
+    if Z is None:
+        Z = (comp.transform(prep.train.X), comp.transform(prep.val.X),
+             comp.transform(prep.test.X))
+    Ztr, Zval, Zte = Z
 
     # Optional GAT fusion - reuse the SAME instance that enriched the train
     # split during training (seed-fixed, untrained weights), so train and eval
@@ -342,7 +358,10 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
     rank, local_rank, world_size, is_distributed = _dist_info()
 
     # Single-process path == pipeline.run, guaranteeing identical laptop output.
-    if not is_distributed:
+    # Low-memory mode takes the path below even for one process: pipeline.run
+    # materialises every window.
+    low_mem = bool(cfg.get("low_mem", False))
+    if not is_distributed and not low_mem:
         if bench_out:
             # Still support --bench-out single-process by timing the MAE below;
             # but for identical-output guarantee we run the standard pipeline.
@@ -373,20 +392,31 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
         d.frame,
         load_alarms(str(Path(cfg["dataset_root"]) / "alarms" / "alarms.csv")),
         horizon=cfg["horizon"])
-    prep = prepare(labeled, d.feature_cols, k=cfg["window_k"])
+    # Low-memory mode keeps each split as per-ROP rows plus window offsets
+    # instead of k overlapping copies of every row (about k times smaller).
+    prep = (prepare_rows if low_mem else prepare)(labeled, d.feature_cols,
+                                                  k=cfg["window_k"])
     # Authoritative cell -> gNB topology map (loader fdn parse) for the GAT.
     cell_to_gnb = (
         d.frame[["cell", "gnb"]].dropna().astype(str)
         .drop_duplicates("cell").set_index("cell")["gnb"].to_dict())
-    log(f"[data] train {prep.train.X.shape}  val {prep.val.X.shape}  "
-        f"test {prep.test.X.shape}")
+    del d, labeled
+    if low_mem:
+        log(f"[data] low-mem: train {len(prep.train.starts)} windows "
+            f"({len(prep.train.rows)} rows)  val {len(prep.val.starts)}  "
+            f"test {len(prep.test.starts)}  k={cfg['window_k']}")
+    else:
+        log(f"[data] train {prep.train.X.shape}  val {prep.val.X.shape}  "
+            f"test {prep.test.X.shape}")
 
     # Stage 1: compressor. MAE trains under DDP; PCA (sklearn, non-neural) is
     # fit replicated on each rank - cheap and deterministic.
     compressor_kind = cfg.get("compressor", "mae")
     if compressor_kind == "mae":
         log(f"[1/2] MAE ({cfg['mae_epochs']} epochs, DDP x{world_size}) ...")
-        mae_core = _train_mae_ddp(cfg, prep, device, ctx, bench_out, log)
+        mae_core = (fit_mae_rows(cfg, prep.train, device, ctx, log, bench_out)
+                    if low_mem else
+                    _train_mae_ddp(cfg, prep, device, ctx, bench_out, log))
         comp = MAECompressor(latent_dim=cfg["latent_dim"], seed=cfg["seed"])
         comp._net = mae_core
     else:
@@ -394,11 +424,19 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
         from autofm.model.compress import build_compressor
         comp = build_compressor("pca", latent_dim=cfg["latent_dim"],
                                 seed=cfg["seed"])
-        comp.fit(prep.train.X)
+        comp.fit(prep.train.windows() if low_mem else prep.train.X)
         mae_core = None  # no neural MAE core in the PCA path
 
     # Compress the TRAIN split (replicated) to feed the classifier.
-    Ztr = comp.transform(prep.train.X)
+    Z = None
+    if low_mem:
+        Ztr = _compress_rows(comp, prep.train)
+        if is_main:  # only rank 0 evaluates
+            Z = (Ztr, _compress_rows(comp, prep.val), _compress_rows(comp, prep.test))
+        log(f"[compress] latents train {Ztr.shape} "
+            f"({Ztr.nbytes / 2**30:.1f} GiB)")
+    else:
+        Ztr = comp.transform(prep.train.X)
 
     # Optional GAT enrich of the train latents before classifier training.
     # ONE seed-fixed instance, reused for eval in _finish_rank0 (identical
@@ -419,7 +457,7 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
 
     result = None
     if is_main:
-        result = _finish_rank0(cfg, prep, comp, clf_core, t0, log, gat=gat)
+        result = _finish_rank0(cfg, prep, comp, clf_core, t0, log, gat=gat, Z=Z)
         log(f"Total wall time: {time.perf_counter() - t0:.1f}s on {device}")
 
     _cleanup(is_distributed)
@@ -441,6 +479,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--metrics-out", default=None)
     ap.add_argument("--bench-out", default=None,
                     help="Record MAE throughput JSON (rank 0) for scaling study.")
+    ap.add_argument("--low-mem", action="store_true",
+                    help="Keep splits as per-ROP rows and compress each row once "
+                         "(needed for long histories; also with one GPU).")
+    ap.add_argument("--gpu-data", action="store_true",
+                    help="Low-mem MAE: keep train rows on the GPU (no DataLoader).")
+    ap.add_argument("--mae-batch-size", type=int, default=None,
+                    help="Low-mem MAE batch (the classifier keeps batch_size).")
+    ap.add_argument("--mae-lr", type=float, default=None)
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -462,6 +508,14 @@ def main(argv: list[str] | None = None) -> int:
         cfg["advisory"] = True
     if args.metrics_out is not None:
         cfg["metrics_out"] = args.metrics_out
+    if args.low_mem:
+        cfg["low_mem"] = True
+    if args.gpu_data:
+        cfg["gpu_data"] = True
+    if args.mae_batch_size is not None:
+        cfg["mae_batch_size"] = args.mae_batch_size
+    if args.mae_lr is not None:
+        cfg["mae_lr"] = args.mae_lr
 
     train_full(cfg, bench_out=args.bench_out)
     return 0
