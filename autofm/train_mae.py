@@ -298,8 +298,10 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
     if num_workers < req_workers:
         log(f"[data] capping num_workers {req_workers} -> {num_workers} "
             f"(CPUs available: {cpu_budget})")
-    loader = DataLoader(
-        dataset, batch_size=cfg.get("batch_size", 512),
+    batch_size = cfg.get("batch_size", 512)
+    gpu_data = bool(cfg.get("gpu_data", False)) and is_cuda
+    loader = None if gpu_data else DataLoader(
+        dataset, batch_size=batch_size,
         shuffle=(sampler is None), sampler=sampler, generator=g,
         num_workers=num_workers, pin_memory=pin, collate_fn=_as_batch,
         persistent_workers=(num_workers > 0),
@@ -310,6 +312,37 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
                                  and "fork" in mp.get_all_start_methods() else None),
     )
 
+    if gpu_data:
+        # The distinct train rows are small enough to live on the GPU, so each
+        # batch is gathered there: no DataLoader workers, no host-to-device
+        # copies. The shuffle replays exactly what the DataLoader would do, so
+        # every batch (and so the training result) is the same.
+        rows_d = torch.from_numpy(train_rows.rows).to(device)
+        starts_d = torch.from_numpy(train_rows.starts).to(device)
+        k_win = train_rows.k
+        log(f"[data] train rows on GPU ({rows_d.numel() * 4 / 2**30:.1f} GiB)")
+
+    def epoch_batches(epoch: int):
+        if sampler is not None:
+            sampler.set_epoch(epoch)       # reshuffle deterministically per epoch
+        if not gpu_data:
+            for (xb,) in loader:
+                yield xb.to(device, non_blocking=pin)
+            return
+        if sampler is not None:
+            order = torch.tensor(list(sampler), dtype=torch.int64)
+        else:
+            # RandomSampler draws from the DataLoader generator: one seed for
+            # the workers when an iterator is created (once with persistent
+            # workers, every epoch without), then one permutation per epoch.
+            if epoch == 0 or num_workers == 0:
+                torch.empty((), dtype=torch.int64).random_(generator=g)
+            order = torch.randperm(n, generator=g)
+        order = order.to(device)
+        for i in range(0, len(order), batch_size):
+            j = order[i:i + batch_size]
+            yield rows_d[starts_d[j // k_win] + j % k_win]
+
     mask_frac = cfg.get("mask_frac", 0.4)
     epochs = cfg["mae_epochs"]
     n = len(dataset)
@@ -317,17 +350,18 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
     # when a --bench-out path is given, so normal training is unchanged.
     bench = bench_out is not None
     bench_warmup = int(cfg.get("bench_warmup", 10))
-    local_batch = cfg.get("batch_size", 512)
+    local_batch = batch_size
     step_ms: list[float] = []
     global_step = 0
 
     net.train()
     for epoch in range(epochs):
-        if sampler is not None:
-            sampler.set_epoch(epoch)       # reshuffle deterministically per epoch
         _push(f"mae/epoch_{epoch}")
-        total = 0.0
-        for (xb,) in loader:
+        epoch_t0 = time.perf_counter()
+        # Summed on the device (float64, same arithmetic as a Python float), so
+        # logging the loss does not wait for the GPU after every step.
+        total = torch.zeros((), dtype=torch.float64, device=device)
+        for xb in epoch_batches(epoch):
             # Time this step only after warmup, bracketing with a CUDA sync so
             # async kernels have actually finished before we read the clock.
             timed = bench and global_step >= bench_warmup
@@ -335,7 +369,6 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
                 torch.cuda.synchronize(device)
             t0 = time.perf_counter() if timed else 0.0
 
-            xb = xb.to(device, non_blocking=pin)
             mask = (torch.rand_like(xb) > mask_frac).float()
             opt.zero_grad(set_to_none=True)
             _push("mae/forward")
@@ -351,7 +384,7 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
             scaler.step(opt)
             scaler.update()
             _pop()
-            total += loss.item() * len(xb)
+            total += loss.detach().double() * len(xb)
 
             if timed:
                 if is_cuda:
@@ -362,7 +395,8 @@ def train(cfg: dict, bench_out: str | None = None) -> None:
         # Each rank sees ~n/world_size rows; this per-rank mean is a fine
         # progress signal (rank 0 only).
         denom = n / max(world_size, 1)
-        log(f"  [MAE] epoch {epoch + 1}/{epochs} recon_mse={total / denom:.4f}")
+        log(f"  [MAE] epoch {epoch + 1}/{epochs} recon_mse={total.item() / denom:.4f} "
+            f"({time.perf_counter() - epoch_t0:.0f}s)")
 
     # ---- Benchmark aggregation + JSON (rank 0) -----------------------------
     if bench:
@@ -419,6 +453,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="DDP only: rank 0 prepares the data once and writes the "
                          "train rows to a file in this directory; the other ranks "
                          "load it instead of preparing the data themselves.")
+    ap.add_argument("--gpu-data", action="store_true",
+                    help="Keep the train rows on the GPU and gather batches there "
+                         "(no DataLoader); same batches and results.")
+    ap.add_argument("--batch-size", type=int, default=None,
+                    help="Override batch_size (per GPU) from config.")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -432,6 +471,10 @@ def main(argv: list[str] | None = None) -> int:
         cfg["mae_epochs"] = args.epochs
     if args.data_cache is not None:
         cfg["data_cache"] = args.data_cache
+    if args.gpu_data:
+        cfg["gpu_data"] = True
+    if args.batch_size is not None:
+        cfg["batch_size"] = args.batch_size
 
     train(cfg, bench_out=args.bench_out)
     return 0
