@@ -134,6 +134,7 @@ def label_frame(
     *,
     horizon: int = 5,
     ts_col: str = "rdiTimestampTZ",
+    mode: str = "forecast",
 ) -> pd.DataFrame:
     """Add ``will_fault`` (0/1) and ``fault_class`` (int) to the telemetry frame.
 
@@ -148,7 +149,13 @@ def label_frame(
         frame:   cell-centric telemetry frame (must have gnb, cell, region, ts).
         alarms:  resolved alarms from :func:`load_alarms`.
         horizon: forecast horizon in ROPs (15-min steps).
+        mode:    ``"forecast"`` (default, the rule above) or ``"active"``: a
+                 row is positive while an in-scope alarm is active,
+                 ``start <= t < end`` (detection, not forecasting). ``horizon``
+                 is then unused.
     """
+    if mode not in ("forecast", "active"):
+        raise ValueError(f"label mode must be 'forecast' or 'active', got {mode!r}")
     frame = frame.copy()
     # Both telemetry and alarms are UTC. Drop tz to compare as plain datetime64
     # (numpy comparisons below are tz-naive); this is lossless since all UTC.
@@ -201,7 +208,11 @@ def label_frame(
         # precursor" to "detect the alarm already present" (label leakage).
         #   positive  <=>  t < start <= t + horizon
         start = np.datetime64(al.start.to_datetime64())
-        overlap = mask & (start > t) & (start <= win_end)
+        if mode == "active":
+            end = np.datetime64(al.end.to_datetime64())
+            overlap = mask & (start <= t) & (t < end)
+        else:
+            overlap = mask & (start > t) & (start <= win_end)
         if not overlap.any():
             n_no_window_overlap += 1
             continue
@@ -218,9 +229,27 @@ def label_frame(
         print(
             f"[labels] applied {n_applied}/{total} alarms "
             f"({n_no_scope_match} matched no in-scope rows, "
-            f"{n_no_window_overlap} matched rows but no forecast window)"
+            f"{n_no_window_overlap} matched rows but no "
+            f"{'active period' if mode == 'active' else 'forecast window'})"
         )
 
     frame["will_fault"] = will
     frame["fault_class"] = cls
     return frame
+
+
+def label_from_config(frame: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """Load the alarm feed and label ``frame`` as the config asks.
+
+    Config keys: ``horizon``; ``label_mode`` (``"forecast"``, default, or
+    ``"active"``); ``alarm_scopes`` (optional subset of ``cell``, ``gnb``,
+    ``region``: only alarms of those scopes make labels).
+    """
+    from pathlib import Path
+
+    alarms = load_alarms(str(Path(cfg["dataset_root"]) / "alarms" / "alarms.csv"))
+    scopes = cfg.get("alarm_scopes")
+    if scopes:
+        alarms = [a for a in alarms if a.scope_type in set(scopes)]
+    return label_frame(frame, alarms, horizon=cfg["horizon"],
+                       mode=cfg.get("label_mode", "forecast"))

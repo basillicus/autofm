@@ -39,7 +39,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from autofm import pipeline as pl
 from autofm.data.features import WindowRows, prepare, prepare_rows
-from autofm.data.labels import CLASS_NAMES, label_frame, load_alarms
+from autofm.data.labels import CLASS_NAMES, label_from_config
 from autofm.data.loader import load
 from autofm.metrics import compute_all, format_summary, write_prometheus
 from autofm.model.classifier import TemporalClassifier, _TemporalEncoder
@@ -174,16 +174,19 @@ def _train_clf_ddp(cfg, Ztr, ytr, device, ctx, log) -> _TemporalEncoder:
     net = _ddp_wrap(core, is_distributed, local_rank, is_cuda)
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
 
-    # Inverse-frequency class weights (same as TemporalClassifier).
+    # Inverse-frequency class weights (same as TemporalClassifier), raised to
+    # class_weight_power: 1 = full inverse frequency (default), 0.5 = square
+    # root (gentler), 0 = unweighted.
     counts = np.bincount(ytr, minlength=n_classes).astype(np.float64)
     counts[counts == 0] = 1.0
-    cw = torch.tensor(counts.sum() / (n_classes * counts),
+    power = float(cfg.get("class_weight_power", 1.0))
+    cw = torch.tensor((counts.sum() / (n_classes * counts)) ** power,
                       dtype=torch.float32, device=device)
     ce = nn.CrossEntropyLoss(weight=cw)
 
     pin = is_cuda
     sampler, loader = _make_loader(
-        TensorDataset(torch.from_numpy(Ztr.astype(np.float32)),
+        TensorDataset(torch.from_numpy(Ztr.astype(np.float32, copy=False)),
                       torch.from_numpy(ytr.astype(np.int64))),
         cfg, rank, world_size, is_distributed, pin)
 
@@ -212,6 +215,14 @@ def _train_clf_ddp(cfg, Ztr, ytr, device, ctx, log) -> _TemporalEncoder:
         log(f"  [clf:{head}] epoch {epoch:02d}/{epochs} "
             f"loss={total / max(seen, 1):.4f}")
     return net.module if is_distributed else net
+
+
+def _with_diff(Z: np.ndarray) -> np.ndarray:
+    """Append the step-to-step change of every input, ``(N, k, L) -> (N, k, 2L)``
+    (zero change at the first step of each window)."""
+    d = np.zeros_like(Z)
+    np.subtract(Z[:, 1:], Z[:, :-1], out=d[:, 1:])
+    return np.concatenate([Z, d], axis=2)
 
 
 def _compress_rows(comp, w: WindowRows) -> np.ndarray:
@@ -388,10 +399,10 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
     log(f"[data] loading telemetry (max_days={cfg['max_days']}, "
         f"max_gnbs={cfg['max_gnbs']}) ...")
     d = load(cfg["dataset_root"], max_days=cfg["max_days"], max_gnbs=cfg["max_gnbs"])
-    labeled = label_frame(
-        d.frame,
-        load_alarms(str(Path(cfg["dataset_root"]) / "alarms" / "alarms.csv")),
-        horizon=cfg["horizon"])
+    labeled = label_from_config(d.frame, cfg)
+    log(f"[labels] mode={cfg.get('label_mode', 'forecast')} "
+        f"scopes={cfg.get('alarm_scopes') or 'all'} "
+        f"positive rate {labeled['will_fault'].mean():.4f}")
     # Low-memory mode keeps each split as per-ROP rows plus window offsets
     # instead of k overlapping copies of every row (about k times smaller).
     prep = (prepare_rows if low_mem else prepare)(labeled, d.feature_cols,
@@ -437,6 +448,15 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
             f"({Ztr.nbytes / 2**30:.1f} GiB)")
     else:
         Ztr = comp.transform(prep.train.X)
+    if cfg.get("add_diff"):
+        if not low_mem:
+            raise ValueError("add_diff needs --low-mem")
+        Ztr = _with_diff(Ztr)
+        if Z is not None:
+            Z = (Ztr, _with_diff(Z[1]), _with_diff(Z[2]))
+        cfg["latent_dim"] = Ztr.shape[2]
+        log(f"[compress] + step-to-step change: inputs {Ztr.shape} "
+            f"({Ztr.nbytes / 2**30:.1f} GiB)")
 
     # Optional GAT enrich of the train latents before classifier training.
     # ONE seed-fixed instance, reused for eval in _finish_rank0 (identical
@@ -487,6 +507,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mae-batch-size", type=int, default=None,
                     help="Low-mem MAE batch (the classifier keeps batch_size).")
     ap.add_argument("--mae-lr", type=float, default=None)
+    ap.add_argument("--label-mode", choices=["forecast", "active"], default=None,
+                    help="forecast: an alarm starts within the horizon (default); "
+                         "active: an alarm is active now (detection).")
+    ap.add_argument("--alarm-scopes", default=None,
+                    help="Comma-separated subset of cell,gnb,region: only these "
+                         "alarms make labels (default: all).")
+    ap.add_argument("--clf-epochs", type=int, default=None)
+    ap.add_argument("--class-weight-power", type=float, default=None,
+                    help="Classifier class weights = inverse frequency ** power "
+                         "(1 default, 0.5 gentler, 0 unweighted).")
+    ap.add_argument("--mae-epochs", type=int, default=None)
+    ap.add_argument("--add-diff", action="store_true",
+                    help="Low-mem: also feed each input's change since the "
+                         "previous ROP.")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -516,6 +550,18 @@ def main(argv: list[str] | None = None) -> int:
         cfg["mae_batch_size"] = args.mae_batch_size
     if args.mae_lr is not None:
         cfg["mae_lr"] = args.mae_lr
+    if args.label_mode is not None:
+        cfg["label_mode"] = args.label_mode
+    if args.alarm_scopes is not None:
+        cfg["alarm_scopes"] = [s.strip() for s in args.alarm_scopes.split(",") if s.strip()]
+    if args.clf_epochs is not None:
+        cfg["clf_epochs"] = args.clf_epochs
+    if args.class_weight_power is not None:
+        cfg["class_weight_power"] = args.class_weight_power
+    if args.add_diff:
+        cfg["add_diff"] = True
+    if args.mae_epochs is not None:
+        cfg["mae_epochs"] = args.mae_epochs
 
     train_full(cfg, bench_out=args.bench_out)
     return 0
