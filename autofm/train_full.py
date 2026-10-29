@@ -85,7 +85,7 @@ def _make_loader(dataset, cfg, rank, world_size, is_distributed, pin):
 def _train_mae_ddp(cfg, prep, device, ctx, bench_out, log) -> _MAENet:
     """DDP-train the MAE on the train split; return the trained core _MAENet."""
     rank, local_rank, world_size, is_distributed, is_cuda = ctx
-    flat = _flatten_time(prep.train.X).astype(np.float32)
+    flat = _flatten_time(prep.train.X).astype(np.float32, copy=False)
     core = _MAENet(flat.shape[1], cfg["latent_dim"]).to(device)
     net = _ddp_wrap(core, is_distributed, local_rank, is_cuda)
     opt = torch.optim.Adam(net.parameters(), lr=cfg.get("mae_lr", 1e-3))
