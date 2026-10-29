@@ -118,6 +118,78 @@ def _make_windows(
     )
 
 
+@dataclass
+class PreparedStreaming:
+    """Streaming splits: lazy WindowDatasets + the fitted scaling stats."""
+
+    train: "object"          # WindowDataset (imported lazily to avoid torch dep)
+    val: "object"
+    test: "object"
+    feature_cols: list[str]
+    mean: np.ndarray
+    std: np.ndarray
+
+
+def _per_cell_arrays(f: pd.DataFrame, feature_cols: list[str],
+                     mean: np.ndarray, std: np.ndarray) -> tuple[dict, dict, dict]:
+    """Build per-cell standardized (T,F) arrays + label arrays for a split.
+
+    This is the only data held in memory: O(rows x F), NOT O(windows x k x F).
+    Windows are sliced from these arrays lazily by :class:`WindowDataset`.
+    """
+    vals: dict = {}
+    will_fault: dict = {}
+    fault_class: dict = {}
+    for cell, g in f.groupby("cell", sort=False):
+        g = g.sort_values(TS)
+        vals[cell] = ((g[feature_cols].to_numpy(dtype=np.float32) - mean) / std
+                      ).astype(np.float32)
+        will_fault[cell] = g["will_fault"].to_numpy(dtype=np.int8)
+        fault_class[cell] = g["fault_class"].to_numpy(dtype=np.int64)
+    return vals, will_fault, fault_class
+
+
+def prepare_streaming(
+    labeled_frame: pd.DataFrame,
+    feature_cols: list[str],
+    *,
+    k: int = 60,
+    train_frac: float = 0.6,
+    val_frac: float = 0.2,
+) -> "PreparedStreaming":
+    """Like :func:`prepare`, but returns lazy ``WindowDataset`` splits.
+
+    Reuses the cheap clean / chronological-split / train-only-standardize logic
+    (identical semantics to ``prepare``), then - instead of materializing every
+    window via ``_make_windows`` - stores per-cell standardized arrays and a
+    tiny window index inside three ``WindowDataset`` objects. Peak memory is
+    O(dataset rows), fixing the eager-path OOM.
+    """
+    from autofm.data.window_dataset import WindowDataset
+
+    f, keep = _clean_features(labeled_frame, feature_cols)
+    f = f.sort_values(["cell", TS]).reset_index(drop=True)
+
+    train_end, val_end = _time_split_bounds(
+        f[TS].to_numpy(), train_frac, val_frac)
+
+    train_f = f[f[TS] <= train_end]
+    val_f = f[(f[TS] > train_end) & (f[TS] <= val_end)]
+    test_f = f[f[TS] > val_end]
+
+    # Fit scaler on train rows only (leakage-safe) - same as prepare().
+    mean, std = _standardize_fit(train_f[keep].to_numpy(dtype=np.float32))
+
+    def _ds(split_f: pd.DataFrame) -> WindowDataset:
+        vals, wf, fc = _per_cell_arrays(split_f, keep, mean, std)
+        return WindowDataset(vals, wf, fc, k)
+
+    return PreparedStreaming(
+        train=_ds(train_f), val=_ds(val_f), test=_ds(test_f),
+        feature_cols=keep, mean=mean, std=std,
+    )
+
+
 def prepare(
     labeled_frame: pd.DataFrame,
     feature_cols: list[str],
